@@ -10,6 +10,12 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [0.1.1] - 2026-10-17
+
+### Fixed
+
+- AppIcon.icns type codes: the icon size entries were mislabeled (e.g. the 16px payload was tagged as 1024px), so macOS could render the app icon at the wrong sizes. The icon now carries the correct type codes.
+
 ## [0.1.0] - 2026-10-17
 
 ### Added
