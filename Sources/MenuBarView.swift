@@ -343,6 +343,10 @@ struct MenuBarView: View {
                 }
             }
 
+            Button("Open Dashboard") {
+                appState.openDashboard()
+            }
+
             Button("Re-run Setup...") {
                 NotificationCenter.default.post(name: .showSetup, object: nil)
             }

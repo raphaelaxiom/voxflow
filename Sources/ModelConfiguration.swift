@@ -36,6 +36,8 @@ public struct ModelConfiguration {
     }
 
     public static let llmModels = [
+        "gemini-2.5-flash",
+        "gemini-3-flash-preview",
         "openai/gpt-oss-20b",
         "openai/gpt-oss-120b",
         "openai/gpt-oss-safeguard-20b",
@@ -46,10 +48,14 @@ public struct ModelConfiguration {
 
     /// Models that accept image input. The context model must support vision for screenshot analysis to work.
     public static let visionModels = [
+        "gemini-2.5-flash",
+        "gemini-3-flash-preview",
         "qwen/qwen3.8-27b"
     ]
 
     public static let transcriptionModels = [
+        "gemini-2.5-flash",
+        "gemini-3-flash-preview",
         "whisper-large-v3",
         "whisper-large-v3-turbo"
     ]

@@ -1,13 +1,13 @@
 ---
-name: freeflow-release
-description: Prepare and publish FreeFlow app releases. Use when the user asks to release FreeFlow, prepare a new version, bump the FreeFlow version, write or update FreeFlow changelog entries, validate a FreeFlow semver release, create a vX.Y.Z tag, or publish a signed FreeFlow DMG through the repository GitHub Actions release workflow.
+name: voxflow-release
+description: Prepare and publish Voxflow app releases. Use when the user asks to release Voxflow, prepare a new version, bump the Voxflow version, write or update Voxflow changelog entries, validate a Voxflow semver release, create a vX.Y.Z tag, or publish a signed Voxflow DMG through the repository GitHub Actions release workflow.
 ---
 
-# FreeFlow Release
+# Voxflow Release
 
 ## Overview
 
-Use this skill to prepare a FreeFlow release from the local repository. FreeFlow releases are semver-tag driven: pushing a tag like `v0.3.1` triggers `.github/workflows/release.yml`, which stamps the app bundle, extracts the matching `CHANGELOG.md` section, builds/signs/notarizes the DMG, and creates the GitHub Release.
+Use this skill to prepare a Voxflow release from the local repository. Voxflow releases are semver-tag driven: pushing a tag like `v0.3.1` triggers `.github/workflows/release.yml`, which stamps the app bundle, extracts the matching `CHANGELOG.md` section, builds/signs/notarizes the DMG, and creates the GitHub Release.
 
 Every release prep must update `CHANGELOG.md` by comparing the previous public semver release with the current release target. The changelog section should describe the user-visible changes that shipped since the previous release, not just summarize the final release-prep commit.
 
@@ -68,7 +68,7 @@ Every release prep must update `CHANGELOG.md` by comparing the previous public s
 5. Validate locally before commit/tag:
    ```bash
    .github/scripts/changelog-section.sh <version>
-   .agents/skills/freeflow-release/scripts/freeflow-release-check.sh <version>
+   .agents/skills/voxflow-release/scripts/voxflow-release-check.sh <version>
    git diff --check
    make clean
    make ARCH="$(uname -m)" CODESIGN_IDENTITY=-
@@ -90,10 +90,10 @@ Every release prep must update `CHANGELOG.md` by comparing the previous public s
 
 8. After GitHub Actions finishes, verify:
    - GitHub Release `v<version>` exists and is marked latest.
-   - `FreeFlow.dmg` is attached.
+   - `Voxflow.dmg` is attached.
    - Release body starts with the matching `CHANGELOG.md` section.
    - A previous app version detects the update and shows What’s New.
 
 ## Helper Script
 
-Run `.agents/skills/freeflow-release/scripts/freeflow-release-check.sh <version>` from the FreeFlow repo root to check release preconditions. It validates semver shape, required files, changelog extraction, workflow trigger basics, and tag availability.
+Run `.agents/skills/voxflow-release/scripts/voxflow-release-check.sh <version>` from the Voxflow repo root to check release preconditions. It validates semver shape, required files, changelog extraction, workflow trigger basics, and tag availability.

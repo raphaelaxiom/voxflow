@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @main
-struct FreeFlowApp: App {
+struct VoxflowApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @AppStorage("show_menu_bar_icon") private var showMenuBarIcon = true
 
@@ -36,12 +36,27 @@ struct MenuBarLabel: View {
             if AppBuild.isDevBundle && !appState.isRecording && !appState.isTranscribing {
                 Image(nsImage: StampedMenuBarIcon.templateImage)
                     .renderingMode(.template)
+            } else if let trayIcon = VoxflowTrayIcon.templateImage,
+                      !appState.isRecording && !appState.isTranscribing {
+                Image(nsImage: trayIcon)
+                    .renderingMode(.template)
             } else {
                 Image(systemName: iconName)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: notificationManager.showCheckmark)
     }
+}
+
+/// The Voxflow tray mark: a transparent PNG shipped in the bundle,
+/// used as a template image so it adapts to light and dark menu bars.
+/// Falls back to the SF Symbol waveform when the resource is missing.
+enum VoxflowTrayIcon {
+    static let templateImage: NSImage? = {
+        guard let image = NSImage(named: "VoxflowTray") else { return nil }
+        image.isTemplate = true
+        return image
+    }()
 }
 
 enum StampedMenuBarIcon {

@@ -1,7 +1,7 @@
 import Foundation
 import os.log
 
-private let transcriptionLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Transcription")
+private let transcriptionLog = OSLog(subsystem: "com.voxflow.app", category: "Transcription")
 
 struct ValidatedAPIConfiguration: Equatable, Sendable {
     let apiKey: String
@@ -11,7 +11,7 @@ struct ValidatedAPIConfiguration: Equatable, Sendable {
 }
 
 enum APIConfigurationSaveFlow {
-    static let defaultBaseURL = "https://api.groq.com/openai/v1"
+    static let defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
     @MainActor
     static func validateAndApply(
@@ -70,7 +70,7 @@ class TranscriptionService {
 
     init(
         apiKey: String,
-        baseURL: String = "https://api.groq.com/openai/v1",
+        baseURL: String = "https://generativelanguage.googleapis.com/v1beta/openai",
         transcriptionModel: String = "whisper-large-v3",
         language: String? = nil
     ) throws {
@@ -90,7 +90,7 @@ class TranscriptionService {
     // Validate API key by hitting a lightweight endpoint
     static func validateAPIKey(
         _ key: String,
-        baseURL: String = "https://api.groq.com/openai/v1",
+        baseURL: String = "https://generativelanguage.googleapis.com/v1beta/openai",
         transport: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse) = { request in
             try await LLMAPITransport.data(for: request)
         }
@@ -162,7 +162,106 @@ class TranscriptionService {
         return try await transcribeAudioWithURLSession(fileURL: fileURL)
     }
 
+    /// Gemini models do not expose an OpenAI-style `/audio/transcriptions`
+    /// endpoint on the OpenAI-compatible base URL. They transcribe through
+    /// `/chat/completions` with an `input_audio` content part instead, which
+    /// is the documented multimodal shape for that endpoint.
+    static func isGeminiModel(_ model: String) -> Bool {
+        model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("gemini-")
+    }
+
+    /// Audio format label for a Gemini `input_audio` part. The recorder
+    /// writes WAV, so that is the expected case; anything else falls back
+    /// to MP3 rather than sending a label the endpoint cannot interpret.
+    static func geminiAudioFormat(for fileName: String) -> String {
+        let lower = fileName.lowercased()
+        if lower.hasSuffix(".wav") { return "wav" }
+        if lower.hasSuffix(".mp3") { return "mp3" }
+        return "wav"
+    }
+
+    /// Builds the Gemini chat-completions transcription request. Pure
+    /// construction so tests can assert the payload without network access.
+    static func geminiTranscriptionRequest(
+        baseURL: URL,
+        apiKey: String,
+        model: String,
+        audioData: Data,
+        format: String
+    ) -> URLRequest {
+        var request = URLRequest(url: baseURL.appendingPathComponent("chat").appendingPathComponent("completions"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let payload: [String: Any] = [
+            "model": model,
+            "temperature": 0.0,
+            "messages": [
+                [
+                    "role": "user",
+                    "content": [
+                        [
+                            "type": "text",
+                            "text": "Transcribe this audio verbatim. Return only the spoken words, with no commentary, no labels, and no added punctuation beyond what was spoken."
+                        ],
+                        [
+                            "type": "input_audio",
+                            "input_audio": [
+                                "data": audioData.base64EncodedString(),
+                                "format": format
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload, options: [])
+        return request
+    }
+
+    /// Extracts the transcript from a Gemini chat-completions response.
+    static func parseGeminiChatTranscript(from data: Data) throws -> String {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let firstChoice = choices.first,
+              let message = firstChoice["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw TranscriptionResponseParsingError.invalidResponse
+        }
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func transcribeAudioViaGeminiChat(fileURL: URL) async throws -> String {
+        let audioData = try Data(contentsOf: fileURL)
+        var request = Self.geminiTranscriptionRequest(
+            baseURL: baseURL,
+            apiKey: apiKey,
+            model: transcriptionModel,
+            audioData: audioData,
+            format: Self.geminiAudioFormat(for: fileURL.lastPathComponent)
+        )
+        request.timeoutInterval = transcriptionTimeoutSeconds
+        let (data, response) = try await LLMAPITransport.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw TranscriptionError.submissionFailed("No response from server")
+        }
+        guard httpResponse.statusCode == 200 else {
+            throw TranscriptionError.submissionFailed(Self.friendlyHTTPMessage(
+                status: httpResponse.statusCode,
+                host: baseURL.host
+            ))
+        }
+        do {
+            return try Self.parseGeminiChatTranscript(from: data)
+        } catch {
+            throw TranscriptionError.pollFailed("Invalid response")
+        }
+    }
+
     private func transcribeAudioWithURLSession(fileURL: URL) async throws -> String {
+        if Self.isGeminiModel(transcriptionModel) {
+            return try await transcribeAudioViaGeminiChat(fileURL: fileURL)
+        }
         let url = baseURL
             .appendingPathComponent("audio")
             .appendingPathComponent("transcriptions")

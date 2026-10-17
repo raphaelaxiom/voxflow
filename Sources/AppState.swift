@@ -7,7 +7,7 @@ import ApplicationServices
 import ScreenCaptureKit
 import Carbon
 import os.log
-private let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
+private let recordingLog = OSLog(subsystem: "com.voxflow.app", category: "Recording")
 
 struct VoiceMacro: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
@@ -58,7 +58,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
 enum AppBuild {
     static var isDevBundle: Bool {
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) == "FreeFlow Dev"
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) == "Voxflow Dev"
     }
 }
 
@@ -198,7 +198,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         case muted(previouslyMuted: Bool)
     }
 
-    private let apiKeyStorageKey = "groq_api_key"
+    private let apiKeyStorageKey = "voxflow_api_key"
     private let apiBaseURLStorageKey = "api_base_url"
     private let transcriptionModelStorageKey = "transcription_model"
     private let transcriptionAPIURLStorageKey = "transcription_api_url"
@@ -216,6 +216,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let transcriptionLanguageStorageKey = "transcription_language"
     private let selectedMicrophoneStorageKey = "selected_microphone_id"
     private let customSystemPromptStorageKey = "custom_system_prompt"
+    private let stylePresetIDStorageKey = "style_preset_id"
     private let customContextPromptStorageKey = "custom_context_prompt"
     private let instructionExecutionGuardEnabledStorageKey = "instruction_execution_guard_enabled"
     private let customSystemPromptLastModifiedStorageKey = "custom_system_prompt_last_modified"
@@ -239,10 +240,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let pasteAfterShortcutReleaseDelay: TimeInterval = 0.03
     private let pressEnterAfterPasteDelay: TimeInterval = 0.08
     private let clipboardRestoreDelay: TimeInterval = 1.0
-    let maxPipelineHistoryCount = 20
+    let maxPipelineHistoryCount = 1000
     static let defaultContextScreenshotMaxDimension = Int(AppContextService.defaultScreenshotMaxDimension)
     static let contextScreenshotDimensionOptions = [1024, 768, 640, 512]
-    static let defaultTranscriptionModel = "whisper-large-v3"
+    static let defaultTranscriptionModel = "gemini-2.5-flash"
     static let transcriptionLanguageOptions: [(code: String, name: String)] = [
         ("", "Auto-detect"),
         ("en", "English"),
@@ -275,9 +276,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         ("hu", "Hungarian"),
         ("ca", "Catalan")
     ]
-    static let defaultPostProcessingModel = "openai/gpt-oss-20b"
-    static let defaultPostProcessingFallbackModel = "qwen/qwen3.8-27b"
-    static let defaultContextModel = "qwen/qwen3.8-27b"
+    static let defaultPostProcessingModel = "gemini-2.5-flash"
+    static let defaultPostProcessingFallbackModel = "gemini-3-flash-preview"
+    static let defaultContextModel = "gemini-2.5-flash"
     private static let deprecatedDefaultPostProcessingFallbackModel = "meta-llama/llama-4-scout-17b-16e-instruct"
     private static let deprecatedDefaultContextModel = "meta-llama/llama-4-scout-17b-16e-instruct"
     private static let trailingPressEnterCommandPattern = try! NSRegularExpression(
@@ -429,6 +430,34 @@ final class AppState: ObservableObject, @unchecked Sendable {
         didSet {
             UserDefaults.standard.set(customSystemPrompt, forKey: customSystemPromptStorageKey)
         }
+    }
+
+    @Published var activeStylePresetID: String {
+        didSet {
+            UserDefaults.standard.set(activeStylePresetID, forKey: stylePresetIDStorageKey)
+        }
+    }
+
+    /// Text of the dictation whose paste failed because no text field had
+    /// focus. Shown in the pill popup; cleared when the popup dismisses.
+    @Published var pasteFailureText: String?
+
+    private var currentRecordingStartedAt: Date?
+
+    private var currentRecordingDuration: Double {
+        guard let startedAt = currentRecordingStartedAt else { return 0 }
+        return max(0, Date().timeIntervalSince(startedAt))
+    }
+
+    /// The system prompt actually sent to the cleanup model: the user's own
+    /// custom prompt wins; otherwise the active style preset's directive is
+    /// appended to the standard prompt; otherwise empty (standard prompt).
+    var effectiveCustomSystemPrompt: String {
+        let custom = customSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !custom.isEmpty { return customSystemPrompt }
+        let preset = StylePresets.preset(id: activeStylePresetID)
+        guard !preset.systemPromptDirective.isEmpty else { return "" }
+        return PostProcessingService.defaultSystemPrompt + "\n\nAdditional style directive:\n" + preset.systemPromptDirective
     }
 
     @Published var customContextPrompt: String {
@@ -679,6 +708,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             UserDefaults.standard.string(forKey: transcriptionLanguageStorageKey) ?? ""
         )
         let customSystemPrompt = UserDefaults.standard.string(forKey: customSystemPromptStorageKey) ?? ""
+        let stylePresetID = UserDefaults.standard.string(forKey: stylePresetIDStorageKey) ?? "default"
         let customContextPrompt = UserDefaults.standard.string(forKey: customContextPromptStorageKey) ?? ""
         let instructionExecutionGuardEnabled = UserDefaults.standard.object(
             forKey: instructionExecutionGuardEnabledStorageKey
@@ -780,6 +810,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.customVocabulary = customVocabulary
         self.transcriptionLanguage = transcriptionLanguage
         self.customSystemPrompt = customSystemPrompt
+        self.activeStylePresetID = stylePresetID
         self.customContextPrompt = customContextPrompt
         self.instructionExecutionGuardEnabled = instructionExecutionGuardEnabled
         self.desktopScreenshotFallbackEnabled = desktopScreenshotFallbackEnabled
@@ -835,6 +866,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
         overlayManager.onUpdateOverlayPressed = { [weak self] in
             DispatchQueue.main.async {
                 self?.handleUpdateOverlayPressed()
+            }
+        }
+        overlayManager.onCopyPasteFailure = { [weak self] in
+            DispatchQueue.main.async {
+                self?.copyPasteFailureText()
+            }
+        }
+        overlayManager.onPasteFailureDismissed = { [weak self] in
+            DispatchQueue.main.async {
+                self?.pasteFailureText = nil
             }
         }
 
@@ -1138,7 +1179,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return audioDir
     }
 
-    /// URL of the flag file written while FreeFlow is actively recording.
+    /// URL of the flag file written while Voxflow is actively recording.
     ///
     /// External tools (voice assistants, TTS barge-in pipelines, conversation
     /// apps) can poll this file to know when the user is dictating. The file
@@ -1146,18 +1187,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// Contents are the UNIX timestamp (seconds, float) of when recording
     /// started — useful for stale-flag detection after an unclean exit.
     ///
-    /// Path: `~/Library/Application Support/FreeFlow/is-recording`
-    /// (or `FreeFlow Dev/is-recording` when running the dev bundle).
+    /// Path: `~/Library/Application Support/Voxflow/is-recording`
+    /// (or `Voxflow Dev/is-recording` when running the dev bundle).
     static func recordingStateFlagURL() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "FreeFlow"
+        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Voxflow"
         return appSupport.appendingPathComponent("\(appName)/is-recording")
     }
 
     /// Serial queue that owns every flag-file I/O so the recording
     /// start/stop hot path never blocks on disk.
     private static let recordingStateFlagQueue = DispatchQueue(
-        label: "com.zachlatta.freeflow.recording-state-flag"
+        label: "com.voxflow.app.recording-state-flag"
     )
 
     /// Write or clear the `is-recording` flag file. Called from the
@@ -1216,6 +1257,114 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    // MARK: - Dashboard helpers
+
+    func openDashboard() {
+        NotificationCenter.default.post(name: .showDashboard, object: nil)
+    }
+
+    func copyHistoryItem(_ item: PipelineHistoryItem) {
+        let text = DashboardStats.displayText(for: item)
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    func deleteHistoryItem(_ item: PipelineHistoryItem) {
+        deleteHistoryEntry(id: item.id)
+    }
+
+    func clearHistory() {
+        clearPipelineHistory()
+    }
+
+    func audioURL(for item: PipelineHistoryItem) -> URL? {
+        guard let audioFileName = item.audioFileName else { return nil }
+        let url = Self.audioStorageDirectory().appendingPathComponent(audioFileName)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    func exportHistoryJSON() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(pipelineHistory)
+    }
+
+    /// Runs a one-shot rewrite of existing text through the edit-mode
+    /// pipeline (used by the dashboard Transforms section).
+    func runTransform(sourceText: String, instruction: String) async throws -> String {
+        let service = PostProcessingService(
+            apiKey: apiKey,
+            baseURL: apiBaseURL,
+            preferredModel: postProcessingModel,
+            preferredFallbackModel: postProcessingFallbackModel,
+            instructionExecutionGuardEnabled: instructionExecutionGuardEnabled
+        )
+        let context = AppContext(
+            appName: nil,
+            bundleIdentifier: nil,
+            windowTitle: nil,
+            selectedText: nil,
+            currentActivity: "",
+            contextSystemPrompt: nil,
+            contextPrompt: nil,
+            screenshotDataURL: nil,
+            screenshotMimeType: nil,
+            screenshotError: nil
+        )
+        let result = try await service.commandTransform(
+            selectedText: sourceText,
+            voiceCommand: instruction,
+            context: context,
+            customVocabulary: customVocabulary,
+            outputLanguage: outputLanguage
+        )
+        return result.transcript
+    }
+
+    // MARK: - Paste-failure popup
+
+    func showPasteFailure(text: String) {
+        pasteFailureText = text
+        overlayManager.showPasteFailure(text: text)
+    }
+
+    func copyPasteFailureText() {
+        guard let text = pasteFailureText, !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        dismissPasteFailure()
+    }
+
+    func dismissPasteFailure() {
+        pasteFailureText = nil
+        overlayManager.dismissPasteFailure()
+    }
+
+    /// Whether the frontmost app currently has an editable text field
+    /// focused. Fails open (returns true) when Accessibility is
+    /// unavailable, so dictation keeps pasting as before.
+    func isEditableTextFieldFocused() -> Bool {
+        guard AXIsProcessTrusted() else { return true }
+        guard let app = NSWorkspace.shared.frontmostApplication else { return true }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var focusedValue: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(
+            appElement,
+            kAXFocusedUIElementAttribute as CFString,
+            &focusedValue
+        )
+        guard result == .success, let focused = focusedValue else { return true }
+        guard CFGetTypeID(focused) == AXUIElementGetTypeID() else { return true }
+        let element = unsafeBitCast(focused, to: AXUIElement.self)
+        var roleValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
+              let role = roleValue as? String else { return true }
+        let editableRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
+        return editableRoles.contains(role)
+    }
+
     func deleteHistoryEntry(id: UUID) {
         guard let index = pipelineHistory.firstIndex(where: { $0.id == id }) else { return }
         do {
@@ -1262,7 +1411,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             instructionExecutionGuardEnabled: instructionExecutionGuardEnabled
         )
         let capturedCustomVocabulary = customVocabulary
-        let capturedCustomSystemPrompt = customSystemPrompt
+        let capturedCustomSystemPrompt = effectiveCustomSystemPrompt
 
         Task {
             do {
@@ -1321,7 +1470,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         audioFileName: item.audioFileName,
                         contextAppName: item.contextAppName,
                         contextBundleIdentifier: item.contextBundleIdentifier,
-                        contextWindowTitle: item.contextWindowTitle
+                        contextWindowTitle: item.contextWindowTitle,
+                        durationSeconds: item.durationSeconds
                     )
                     do {
                         try pipelineHistoryStore.update(updatedItem)
@@ -1360,7 +1510,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         audioFileName: item.audioFileName,
                         contextAppName: item.contextAppName,
                         contextBundleIdentifier: item.contextBundleIdentifier,
-                        contextWindowTitle: item.contextWindowTitle
+                        contextWindowTitle: item.contextWindowTitle,
+                        durationSeconds: item.durationSeconds
                     )
                     do {
                         try pipelineHistoryStore.update(updatedItem)
@@ -2228,13 +2379,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func beginCriticalDictationActivity() {
         guard !automaticTerminationDisabled else { return }
-        ProcessInfo.processInfo.disableAutomaticTermination("FreeFlow dictation in progress")
+        ProcessInfo.processInfo.disableAutomaticTermination("Voxflow dictation in progress")
         automaticTerminationDisabled = true
     }
 
     private func endCriticalDictationActivity() {
         guard automaticTerminationDisabled else { return }
-        ProcessInfo.processInfo.enableAutomaticTermination("FreeFlow dictation in progress")
+        ProcessInfo.processInfo.enableAutomaticTermination("Voxflow dictation in progress")
         automaticTerminationDisabled = false
     }
 
@@ -2245,6 +2396,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         errorMessage = nil
 
         isRecording = true
+        currentRecordingStartedAt = Date()
         statusText = "Starting..."
         hasShownScreenshotPermissionAlert = false
         // Keep this recording's display preference fixed, including during startup silence.
@@ -2765,7 +2917,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         context: appContext,
                         postProcessingService: postProcessingService,
                         customVocabulary: self.customVocabulary,
-                        customSystemPrompt: self.customSystemPrompt,
+                        customSystemPrompt: self.effectiveCustomSystemPrompt,
                         outputLanguage: self.outputLanguage,
                         dictationLanguage: Self.dictationLanguageName(for: self.transcriptionLanguage),
                         preserveExactWording: self.preserveExactWording
@@ -2797,11 +2949,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             rawTranscript: trimmedRawTranscript,
                             postProcessedTranscript: trimmedFinalTranscript,
                             postProcessingPrompt: result.prompt,
-                            systemPrompt: Self.resolvedSystemPrompt(self.customSystemPrompt),
+                            systemPrompt: Self.resolvedSystemPrompt(self.effectiveCustomSystemPrompt),
                             context: appContext,
                             processingStatus: processingStatus,
                             intent: sessionIntent,
-                            audioFileName: savedAudioFile?.fileName
+                            audioFileName: savedAudioFile?.fileName,
+                            durationSeconds: self.currentRecordingDuration
                         )
                         self.transcriptionTask = nil
                         self.transcribingAudioFileName = nil
@@ -2843,14 +2996,22 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             }
 
                             let pendingClipboardRestore = self.writeTranscriptToPasteboard(trimmedFinalTranscript)
-                            self.pasteAtCursorWhenShortcutReleased {
-                                if shouldPressEnterAfterPaste {
-                                    self.pressEnterAfterPaste {
+                            if self.isEditableTextFieldFocused() {
+                                self.pasteAtCursorWhenShortcutReleased {
+                                    if shouldPressEnterAfterPaste {
+                                        self.pressEnterAfterPaste {
+                                            self.restoreClipboardIfNeeded(pendingClipboardRestore)
+                                        }
+                                    } else {
                                         self.restoreClipboardIfNeeded(pendingClipboardRestore)
                                     }
-                                } else {
-                                    self.restoreClipboardIfNeeded(pendingClipboardRestore)
                                 }
+                            } else {
+                                // No text field had focus: the dictation is
+                                // already saved to history above, and the pill
+                                // popup lets the user copy it on demand.
+                                self.showPasteFailure(text: trimmedFinalTranscript)
+                                self.restoreClipboardIfNeeded(pendingClipboardRestore)
                             }
                         }
 
@@ -2895,11 +3056,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             rawTranscript: "",
                             postProcessedTranscript: "",
                             postProcessingPrompt: "",
-                            systemPrompt: Self.resolvedSystemPrompt(self.customSystemPrompt),
+                            systemPrompt: Self.resolvedSystemPrompt(self.effectiveCustomSystemPrompt),
                             context: resolvedContext,
                             processingStatus: "Error: \(error.localizedDescription)",
                             intent: sessionIntent,
-                            audioFileName: savedAudioFile?.fileName
+                            audioFileName: savedAudioFile?.fileName,
+                            durationSeconds: self.currentRecordingDuration
                         )
                         self.audioRecorder.cleanup()
                         self.refreshAvailableMicrophonesIfNeeded()
@@ -2923,7 +3085,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         context: AppContext,
         processingStatus: String,
         intent: SessionIntent,
-        audioFileName: String? = nil
+        audioFileName: String? = nil,
+        durationSeconds: Double = 0
     ) {
         let newEntry = PipelineHistoryItem(
             intent: intent.persistedIntent,
@@ -2946,7 +3109,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             audioFileName: audioFileName,
             contextAppName: context.appName,
             contextBundleIdentifier: context.bundleIdentifier,
-            contextWindowTitle: context.windowTitle
+            contextWindowTitle: context.windowTitle,
+            durationSeconds: durationSeconds
         )
         do {
             let removedAudioFileNames = try pipelineHistoryStore.append(newEntry, maxCount: maxPipelineHistoryCount)

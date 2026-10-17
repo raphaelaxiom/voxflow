@@ -1,5 +1,5 @@
 name: Feature request
-description: Propose an improvement to FreeFlow
+description: Propose an improvement to Voxflow
 title: "[Feature]: "
 labels:
   - enhancement
@@ -16,7 +16,7 @@ body:
     id: behavior
     attributes:
       label: Proposed behavior
-      description: What should FreeFlow do?
+      description: What should Voxflow do?
     validations:
       required: true
 

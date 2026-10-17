@@ -71,7 +71,7 @@ Return only two sentences, no labels, no markdown, no extra commentary.
 
     init(
         apiKey: String,
-        baseURL: String = "https://api.groq.com/openai/v1",
+        baseURL: String = "https://generativelanguage.googleapis.com/v1beta/openai",
         customContextPrompt: String = "",
         contextModel: String = AppContextService.defaultContextModel,
         screenshotMaxDimension: CGFloat = AppContextService.defaultScreenshotMaxDimension,

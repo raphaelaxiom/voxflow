@@ -1,12 +1,32 @@
 # Changelog
 
-All notable changes to FreeFlow are documented here.
+All notable changes to Voxflow are documented here.
+
+Entries before 0.1.0 document the upstream FreeFlow project this fork is based on.
 
 This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATCH`, where:
 
 - `MAJOR` changes include breaking behavior or major compatibility changes.
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
+
+## [0.1.0] - 2026-10-17
+
+### Added
+
+- Voxflow launch: rebrand of the FreeFlow fork with a new original logo, bundle ID `com.voxflow.app`, and credits to Raphael Axiom and DKH Verse.
+- Native Gemini preset: Gemini's OpenAI-compatible endpoint powers both transcription (`gemini-2.5-flash`) and polish. Setup asks for a Gemini API key; Groq remains an optional alternative provider.
+- Polish prompt that returns dictation **with layout** (headings, bullets, structure as appropriate) and preserves the speaker's language — Hinglish stays Hinglish in Roman script, with no Devanagari conversion and no forced English.
+- Dashboard: searchable history of every dictation with click-to-copy, delete, and clear, plus real stats (words today, total words, words per minute, day streak).
+- Paste-fail safety net: when no text field has focus, the dictation is still saved to history and a pill offers "Text not pasted. Click here to copy text."
+- Notetaker, Dictionary, Snippets, Style presets, Transforms, and Scratchpad — all fully functional in the dashboard.
+- Setup rebuilt around the Gemini API key; the GitHub social-proof panel and Groq references are gone.
+
+### Changed
+
+- Default transcription and polish models are now Gemini models.
+- Update checks, release notes, and download links point at `raphaelaxiom/voxflow`.
+- Release signing is tolerant: without a Developer ID certificate, builds are ad-hoc signed and notarization is skipped.
 
 ## [1.3.1] - 2026-10-09
 

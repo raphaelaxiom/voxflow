@@ -15,7 +15,7 @@ enum AppContextServiceTests {
     }
 
     private static func testDesktopFallbackPreferencePersistence() {
-        let suiteName = "FreeFlowTests.DesktopFallback.\(UUID().uuidString)"
+        let suiteName = "VoxflowTests.DesktopFallback.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
@@ -78,14 +78,14 @@ enum AppContextServiceTests {
         Hidden chain of thought should never appear in context.
         It contains misleading details.
         </think>
-        The user is editing a project note in FreeFlow. They likely intend to tighten the release wording.
+        The user is editing a project note in Voxflow. They likely intend to tighten the release wording.
         """
 
         let summary = AppContextService.activitySummary(from: output, model: "qwen/qwen3.8-27b")
 
         TestSupport.expectEqual(
             summary,
-            "The user is editing a project note in FreeFlow. They likely intend to tighten the release wording."
+            "The user is editing a project note in Voxflow. They likely intend to tighten the release wording."
         )
         TestSupport.expect(summary?.contains("Hidden chain of thought") == false, "Qwen reasoning leaked into summary")
     }

@@ -53,8 +53,6 @@ private struct SetupProviderSettingsSheet: View {
 struct SetupView: View {
     var onComplete: () -> Void
     @EnvironmentObject var appState: AppState
-    @Environment(\.openURL) private var openURL
-    private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
     private enum SetupStep: Int, CaseIterable {
         case welcome = 0
         case apiKey
@@ -82,7 +80,6 @@ struct SetupView: View {
     @State private var accessibilityTimer: Timer?
     @State private var screenRecordingTimer: Timer?
     @State private var customVocabularyInput: String = ""
-    @StateObject private var githubCache = GitHubMetadataCache.shared
 
     // Test transcription state
     private enum TestPhase: Equatable {
@@ -198,9 +195,6 @@ struct SetupView: View {
             customVocabularyInput = appState.customVocabulary
             checkMicPermission()
             checkAccessibility()
-            Task {
-                await githubCache.fetchIfNeeded()
-            }
         }
         .onDisappear {
             apiDraft.dismiss()
@@ -285,97 +279,15 @@ struct SetupView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(spacing: 10) {
-                HStack(spacing: 8) {
-                    AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/992248")) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().aspectRatio(contentMode: .fill)
-                        default:
-                            Color.gray.opacity(0.2)
-                        }
-                    }
-                    .frame(width: 26, height: 26)
-                    .clipShape(Circle())
-
-                    Button {
-                        openURL(freeflowRepoURL)
-                    } label: {
-                        Text("zachlatta/freeflow")
-                            .font(.system(.caption, design: .monospaced).weight(.medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.blue)
-
-                    Spacer()
-
-                    HStack(spacing: 4) {
-                        Image(systemName: "star.fill")
-                            .foregroundStyle(.yellow)
-                            .font(.caption2)
-                        if githubCache.isLoading {
-                            ProgressView().scaleEffect(0.5)
-                        } else if let count = githubCache.starCount {
-                            Text("\(count.formatted()) \(count == 1 ? "star" : "stars")")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(Color.yellow.opacity(0.14)))
-
-                    Button {
-                        openURL(freeflowRepoURL)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "star")
-                            Text("Star")
-                        }
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(Color.yellow.opacity(0.18)))
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                if !githubCache.recentContributors.isEmpty {
-                    Divider()
-                    HStack(spacing: 8) {
-                        HStack(spacing: -6) {
-                            ForEach(githubCache.recentContributors) { contributor in
-                                Button {
-                                    openURL(contributor.htmlUrl)
-                                } label: {
-                                    AsyncImage(url: contributor.avatarThumbnailUrl) { phase in
-                                        switch phase {
-                                        case .success(let image):
-                                            image.resizable().aspectRatio(contentMode: .fill)
-                                        default:
-                                            Color.gray.opacity(0.2)
-                                        }
-                                    }
-                                    .frame(width: 22, height: 22)
-                                    .clipShape(Circle())
-                                    .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(Text(contributor.login))
-                                .accessibilityHint(Text("Open contributor profile"))
-                            }
-                        }
-                        .clipped()
-                        Text("recent contributors")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .fixedSize()
-                        Spacer()
-                    }
-                    .clipped()
-                }
+            VStack(spacing: 6) {
+                Text("Free for everyone. No account needed.")
+                    .font(.subheadline.weight(.semibold))
+                Text("Created by Raphael Axiom · Developed by DKH Verse")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .padding(12)
+            .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 12)
                     .fill(.ultraThinMaterial)
@@ -397,23 +309,23 @@ struct SetupView: View {
                     .font(.system(size: 60))
                     .foregroundStyle(.blue)
 
-                Text("API Key")
+                Text("Gemini API Key")
                     .font(.title)
                     .fontWeight(.bold)
 
-                Text("Enter an API key for your OpenAI-compatible provider. If you are not using Groq, expand the advanced provider settings and enter that provider's base URL and model IDs before continuing.")
+                Text("Voxflow transcribes and polishes your dictation with Gemini. Paste your Gemini API key below — get one free from Google AI Studio. To use a different OpenAI-compatible provider instead, expand the advanced provider settings and enter its base URL and model IDs.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 VStack(alignment: .leading, spacing: 10) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Using Groq?")
+                        Text("Using Gemini?")
                             .font(.subheadline.weight(.semibold))
                         VStack(alignment: .leading, spacing: 2) {
-                            instructionRow(number: "1", text: "Go to [console.groq.com/keys](https://console.groq.com/keys)")
-                            instructionRow(number: "2", text: "Create a free account (if you don't have one)")
-                            instructionRow(number: "3", text: "Click **Create API Key** and copy it")
+                            instructionRow(number: "1", text: "Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey)")
+                            instructionRow(number: "2", text: "Sign in with your Google account")
+                            instructionRow(number: "3", text: "Click **Create API key** and copy it here")
                         }
                     }
                     .padding(10)
@@ -1440,7 +1352,7 @@ class GitHubMetadataCache: ObservableObject {
 
     private var lastFetchDate: Date?
     private let cacheDuration: TimeInterval = 5 * 60 // 5 minutes
-    private let repoAPIURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow")!
+    private let repoAPIURL = URL(string: "https://api.github.com/repos/raphaelaxiom/voxflow")!
 
     private init() {}
 
@@ -1463,7 +1375,7 @@ class GitHubMetadataCache: ObservableObject {
             if count > 0 {
                 let perPage = 100
                 let lastPage = max(1, Int(ceil(Double(count) / Double(perPage))))
-                let stargazersURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow/stargazers?per_page=\(perPage)&page=\(lastPage)")!
+                let stargazersURL = URL(string: "https://api.github.com/repos/raphaelaxiom/voxflow/stargazers?per_page=\(perPage)&page=\(lastPage)")!
                 var request = URLRequest(url: stargazersURL)
                 request.setValue("application/vnd.github.v3.star+json", forHTTPHeaderField: "Accept")
                 let starredResult = try await URLSession.shared.data(for: request)
@@ -1475,7 +1387,7 @@ class GitHubMetadataCache: ObservableObject {
             }
 
             var contributors: [GitHubContributor] = []
-            let contributorsURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow/contributors?per_page=15")!
+            let contributorsURL = URL(string: "https://api.github.com/repos/raphaelaxiom/voxflow/contributors?per_page=15")!
             do {
                 let contributorsResult = try await URLSession.shared.data(from: contributorsURL)
                 if let contribHTTP = contributorsResult.1 as? HTTPURLResponse,

@@ -13,6 +13,8 @@ final class RecordingOverlayState: ObservableObject {
     @Published var updateVersion: String = ""
     @Published var errorMessage: String?
     @Published var toastID: UUID?
+    @Published var pasteFailureText: String?
+    @Published var pasteFailureID: UUID?
 }
 
 enum OverlayPhase {
@@ -21,6 +23,9 @@ enum OverlayPhase {
     case transcribing
     case feedback
     case updateAvailable
+    /// Dictation finished but no text field had focus, so nothing was
+    /// pasted. The pill offers "Text not pasted. Click here to copy text."
+    case pasteFailed
 }
 
 // MARK: - NSScreen Helpers
@@ -81,6 +86,8 @@ final class RecordingOverlayManager {
 
     var onStopButtonPressed: (() -> Void)?
     var onUpdateOverlayPressed: (() -> Void)?
+    var onCopyPasteFailure: (() -> Void)?
+    var onPasteFailureDismissed: (() -> Void)?
 
     /// The screen the overlay should drop down on. The user picks one of
     /// three modes in Settings, stored in UserDefaults under
@@ -128,6 +135,7 @@ final class RecordingOverlayManager {
     private var overlayAcceptsMouseEvents: Bool {
         (overlayState.phase == .recording && overlayState.recordingTriggerMode == .toggle)
             || overlayState.phase == .updateAvailable
+            || overlayState.phase == .pasteFailed
     }
 
     func showInitializing(mode: RecordingTriggerMode = .hold, isCommandMode: Bool = false) {
@@ -243,6 +251,37 @@ final class RecordingOverlayManager {
         }
     }
 
+    /// Shows the paste-failure pill: "Text not pasted. Click here to
+    /// copy text." The text is already saved to history; clicking copies it.
+    /// Auto-dismisses after 15 seconds.
+    func showPasteFailure(text: String) {
+        DispatchQueue.main.async { [self] in
+            let failureID = UUID()
+            self.overlayState.pasteFailureText = text
+            self.overlayState.pasteFailureID = failureID
+            self.lockedOverlayWidth = nil
+            self.overlayState.phase = .pasteFailed
+            self.showOverlayPanel(animatedResize: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15.0) { [weak self] in
+                guard let self else { return }
+                guard self.overlayState.phase == .pasteFailed,
+                      self.overlayState.pasteFailureID == failureID else {
+                    return
+                }
+                self.dismissPasteFailure()
+            }
+        }
+    }
+
+    func dismissPasteFailure() {
+        DispatchQueue.main.async {
+            // Only dismiss the pill itself; a newer overlay phase (e.g. a
+            // fresh recording) must not be torn down by a stale dismiss.
+            guard self.overlayState.phase == .pasteFailed else { return }
+            self.dismissAll()
+        }
+    }
+
     func showUpdateAvailable(version: String) {
         DispatchQueue.main.async {
             self.lockedOverlayWidth = nil
@@ -339,6 +378,12 @@ final class RecordingOverlayManager {
                     },
                     onUpdateOverlayPressed: { [weak self] in
                         self?.onUpdateOverlayPressed?()
+                    },
+                    onCopyPasteFailure: { [weak self] in
+                        self?.onCopyPasteFailure?()
+                    },
+                    onDismissPasteFailure: { [weak self] in
+                        self?.dismissPasteFailure()
                     }
                 )
                 .padding(.top, screenHasNotch ? notchOverlap : 0)
@@ -373,6 +418,8 @@ final class RecordingOverlayManager {
             return overlayState.errorMessage?.isEmpty ?? true
         case .updateAvailable:
             return false
+        case .pasteFailed:
+            return false
         }
     }
 
@@ -402,8 +449,9 @@ final class RecordingOverlayManager {
 
         let width = overlayWidth
         let useCompact = (UserDefaults.standard.object(forKey: "use_compact_overlay") as? Bool) ?? true
-        let forceDropDownPill = overlayState.phase == .feedback
-            && !(overlayState.errorMessage?.isEmpty ?? true)
+        let forceDropDownPill = (overlayState.phase == .feedback
+            && !(overlayState.errorMessage?.isEmpty ?? true))
+            || overlayState.phase == .pasteFailed
         // Compact mode: overlay sits flush with the menu bar on every display.
         // notchOverlap equals the menu-bar height on non-notched screens too,
         // so zero protrusion is universal — not notch-only. The legacy
@@ -447,6 +495,12 @@ final class RecordingOverlayManager {
             return max(notchWidth, updateWidth)
         }
 
+        if overlayState.phase == .pasteFailed {
+            let pasteFailedWidth: CGFloat = 360
+            guard screenHasNotch else { return pasteFailedWidth }
+            return max(notchWidth, pasteFailedWidth)
+        }
+
         let commandModeWidth: CGFloat = 180
         let toggleWidth: CGFloat = 150
         let defaultWidth: CGFloat = 92
@@ -479,6 +533,12 @@ final class RecordingOverlayManager {
         overlayState.recordingStartedAt = nil
         overlayState.isCommandMode = false
         overlayState.updateVersion = ""
+        let hadPasteFailure = overlayState.pasteFailureText != nil
+        overlayState.pasteFailureText = nil
+        overlayState.pasteFailureID = nil
+        if hadPasteFailure {
+            onPasteFailureDismissed?()
+        }
         if let panel = overlayWindow {
             panel.orderOut(nil)
             // orderOut alone leaves the panel retained in NSApp.windows with its
@@ -960,6 +1020,8 @@ struct RecordingOverlayView: View {
     @ObservedObject var state: RecordingOverlayState
     let onStopButtonPressed: () -> Void
     let onUpdateOverlayPressed: () -> Void
+    var onCopyPasteFailure: () -> Void = {}
+    var onDismissPasteFailure: () -> Void = {}
 
     private var leadingAccessoryWidth: CGFloat {
         guard showsLiveRecordingContent && state.showsRecordingTimer else { return 24 }
@@ -983,6 +1045,11 @@ struct RecordingOverlayView: View {
                 FailureIndicatorView()
             } else if state.phase == .updateAvailable {
                 UpdateAvailableOverlayView(onPress: onUpdateOverlayPressed)
+            } else if state.phase == .pasteFailed {
+                PasteFailureOverlayView(
+                    onCopy: onCopyPasteFailure,
+                    onDismiss: onDismissPasteFailure
+                )
             } else {
                 ZStack {
                     Group {
@@ -1110,6 +1177,38 @@ struct ErrorOverlayView: View {
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .truncationMode(.tail)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+/// Paste-failure pill: the dictation was saved to history but could
+/// not be pasted because no text field had focus. Clicking the pill
+/// copies the text; the X dismisses it.
+struct PasteFailureOverlayView: View {
+    let onCopy: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: onCopy) {
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.on.clipboard")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Text not pasted. Click here to copy text.")
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .buttonStyle(.plain)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+            .buttonStyle(.plain)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }

@@ -1,17 +1,17 @@
-# Contributing to FreeFlow
+# Contributing to Voxflow
 
-Thanks for your interest in contributing to FreeFlow! FreeFlow is a free and open-source macOS dictation app, and community contributions are welcome.
+Thanks for your interest in contributing to Voxflow! Voxflow is a free and open-source macOS dictation app, and community contributions are welcome.
 
 This guide describes how to set up the project, what conventions to follow, and how to submit your changes.
 
 ## Prerequisites
 
-FreeFlow is a macOS app built with Swift and the macOS SDK. To build and test locally you need:
+Voxflow is a macOS app built with Swift and the macOS SDK. To build and test locally you need:
 
 - A Mac running macOS 13.0 or later
 - Xcode Command Line Tools (`xcode-select --install`)
 - Producing disk images additionally requires Homebrew's `create-dmg` and `fileicon` packages.
-- A free [Groq API key](https://groq.com/) (or another OpenAI-compatible provider) to exercise end-to-end dictation
+- A free [Gemini API key](https://aistudio.google.com/apikey) (or another OpenAI-compatible provider) to exercise end-to-end dictation
 
 ## Getting the Source
 
@@ -19,9 +19,9 @@ FreeFlow is a macOS app built with Swift and the macOS SDK. To build and test lo
 2. Clone your fork:
 
    ```bash
-   git clone https://github.com/<your-username>/freeflow.git
-   cd freeflow
-   git remote add upstream https://github.com/zachlatta/freeflow.git
+   git clone https://github.com/<your-username>/voxflow.git
+   cd voxflow
+   git remote add upstream https://github.com/raphaelaxiom/voxflow.git
    ```
 
 3. Keep your fork in sync with upstream before starting new work:
@@ -36,11 +36,11 @@ FreeFlow is a macOS app built with Swift and the macOS SDK. To build and test lo
 ## Building
 
 ```bash
-make            # builds build/FreeFlow Dev.app
+make            # builds build/Voxflow Dev.app
 make run        # builds and opens the app
 ```
 
-The Makefile builds a `.app` bundle under `build/` using `swiftc` against the macOS SDK. It signs development builds with a local "FreeFlow Dev" identity. That identity must exist in your keychain; the Makefile does not fall back automatically if it is missing.
+The Makefile builds a `.app` bundle under `build/` using `swiftc` against the macOS SDK. It signs development builds with a local "Voxflow Dev" identity. That identity must exist in your keychain; the Makefile does not fall back automatically if it is missing.
 
 For a compile-and-bundle check without that identity, explicitly request ad-hoc signing:
 
@@ -98,7 +98,7 @@ Do not change versions, release notes, signing, notarization, or release workflo
 
 ## Submitting Changes
 
-1. Open a [pull request](https://github.com/zachlatta/freeflow/compare) against `zachlatta/freeflow:main`.
+1. Open a [pull request](https://github.com/raphaelaxiom/voxflow/compare) against `raphaelaxiom/voxflow:main`.
 2. Include a description that covers:
    - **Summary** — what the PR does, in a sentence or two.
    - **Motivation** — why the change is needed (link the issue if one exists, e.g., `Closes #123`).
@@ -112,14 +112,14 @@ Do not change versions, release notes, signing, notarization, or release workflo
 
 ## Reporting Issues
 
-- Search [existing issues](https://github.com/zachlatta/freeflow/issues) before opening a new one to avoid duplicates.
-- Include the FreeFlow build number and macOS version (both are shown in the app's About or Settings window).
+- Search [existing issues](https://github.com/raphaelaxiom/voxflow/issues) before opening a new one to avoid duplicates.
+- Include the Voxflow build number and macOS version (both are shown in the app's About or Settings window).
 - Describe what you expected, what happened, and the steps to reproduce.
 - Feature requests are welcome — label them as `enhancement` and explain the use case.
 
 ## Discussions
 
-For ideas, questions, and show-and-tell that don't fit a specific issue, use [GitHub Discussions](https://github.com/zachlatta/freeflow/discussions).
+For ideas, questions, and show-and-tell that don't fit a specific issue, use [GitHub Discussions](https://github.com/raphaelaxiom/voxflow/discussions).
 
 ## License
 

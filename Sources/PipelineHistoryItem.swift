@@ -28,6 +28,9 @@ struct PipelineHistoryItem: Identifiable, Codable {
     let contextAppName: String?
     let contextBundleIdentifier: String?
     let contextWindowTitle: String?
+    /// Length of the recorded dictation in seconds. Zero when unknown
+    /// (entries recorded before this field existed). Used for WPM stats.
+    let durationSeconds: Double
 
     init(
         intent: PipelineHistoryItemIntent = .dictation,
@@ -50,7 +53,8 @@ struct PipelineHistoryItem: Identifiable, Codable {
         audioFileName: String? = nil,
         contextAppName: String? = nil,
         contextBundleIdentifier: String? = nil,
-        contextWindowTitle: String? = nil
+        contextWindowTitle: String? = nil,
+        durationSeconds: Double = 0
     ) {
         self.intent = intent
         self.selectedText = selectedText
@@ -73,5 +77,6 @@ struct PipelineHistoryItem: Identifiable, Codable {
         self.contextAppName = contextAppName
         self.contextBundleIdentifier = contextBundleIdentifier
         self.contextWindowTitle = contextWindowTitle
+        self.durationSeconds = durationSeconds
     }
 }

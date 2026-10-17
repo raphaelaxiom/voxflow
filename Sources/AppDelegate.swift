@@ -4,6 +4,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     var setupWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var dashboardWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NetworkMonitor.shared.start()
@@ -18,6 +19,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(handleShowSettings),
             name: .showSettings,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleShowDashboard),
+            name: .showDashboard,
             object: nil
         )
 
@@ -83,6 +90,59 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleShowSettings() {
         showSettingsWindow()
+    }
+
+    @objc private func handleShowDashboard() {
+        showDashboardWindow()
+    }
+
+    private func showDashboardWindow() {
+        NSApp.setActivationPolicy(.regular)
+
+        if let dashboardWindow, dashboardWindow.isVisible {
+            dashboardWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        if dashboardWindow == nil {
+            presentDashboardWindow()
+        } else {
+            dashboardWindow?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func presentDashboardWindow() {
+        let dashboardView = DashboardView()
+            .environmentObject(appState)
+        let hostingView = NSHostingView(rootView: dashboardView)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1160, height: 740),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "\(AppName.displayName) Dashboard"
+        window.contentView = hostingView
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        dashboardWindow = window
+
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            if self?.setupWindow == nil && self?.settingsWindow == nil {
+                NSApp.setActivationPolicy(.accessory)
+            }
+            self?.dashboardWindow = nil
+        }
     }
 
     private func showSettingsWindow() {

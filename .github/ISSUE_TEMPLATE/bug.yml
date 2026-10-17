@@ -1,5 +1,5 @@
 name: Bug report
-description: Report reproducible incorrect behavior in FreeFlow
+description: Report reproducible incorrect behavior in Voxflow
 title: "[Bug]: "
 labels:
   - bug
@@ -41,7 +41,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: FreeFlow version and build
+      label: Voxflow version and build
       description: Use the version and build shown by the app. Say "unknown" if unavailable.
     validations:
       required: true
@@ -70,7 +70,7 @@ body:
     attributes:
       label: Provider and model
       description: Provider and model names only. Do not include an API key or private URL.
-      placeholder: "For example: Groq / whisper-large-v3-turbo"
+      placeholder: "For example: Gemini / gemini-2.5-flash"
 
   - type: textarea
     id: permissions

@@ -1,6 +1,6 @@
-# FreeFlow maintenance guide
+# Voxflow maintenance guide
 
-FreeFlow is a native macOS menu-bar dictation app built directly with `swiftc`
+Voxflow is a native macOS menu-bar dictation app built directly with `swiftc`
 and Make. It does not use Swift Package Manager or an Xcode project. Preserve
 that architecture unless the user explicitly approves a migration.
 
@@ -73,7 +73,7 @@ dependencies; they must not call live AI providers.
 
 ## Privacy and security
 
-FreeFlow handles highly sensitive user data. Never commit, print, upload, or
+Voxflow handles highly sensitive user data. Never commit, print, upload, or
 place in test fixtures:
 
 - API keys, signing credentials, or `.env` contents.

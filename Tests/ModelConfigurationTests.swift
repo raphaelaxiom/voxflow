@@ -63,7 +63,7 @@ enum ModelConfigurationTests {
     }
 
     private static func testGroqSelectionMigration() {
-        let suite = "FreeFlowTests.ModelMigration.\(UUID().uuidString)"
+        let suite = "VoxflowTests.ModelMigration.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let keys = ["context_model", "post_processing_model", "post_processing_fallback_model"]

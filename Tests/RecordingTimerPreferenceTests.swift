@@ -2,7 +2,7 @@ import Foundation
 
 enum RecordingTimerPreferenceTests {
     static func run() {
-        let suite = "FreeFlowTests.RecordingTimer.\(UUID().uuidString)"
+        let suite = "VoxflowTests.RecordingTimer.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
 

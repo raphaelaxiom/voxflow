@@ -190,7 +190,7 @@ struct ProviderSettingsFields: View {
                 }
             )
 
-            // Shows when this model has hit its daily Groq rate limit.
+            // Shows when this model has hit its daily provider rate limit.
             // Disappears automatically once the limit window resets.
             if let expiry = dailyCooldownExpiry(for: appState.postProcessingModel) {
                 Label {
@@ -538,7 +538,7 @@ struct GeneralSettingsView: View {
     @State private var copiedBuildInfoResetWorkItem: DispatchWorkItem?
     @StateObject private var githubCache = GitHubMetadataCache.shared
     @ObservedObject private var updateManager = UpdateManager.shared
-    private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
+    private let voxflowRepoURL = URL(string: "https://github.com/raphaelaxiom/voxflow")!
 
     private var appDisplayName: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
@@ -551,7 +551,7 @@ struct GeneralSettingsView: View {
     }
 
     private var appBuildNumber: String {
-        Bundle.main.object(forInfoDictionaryKey: "FreeFlowBuildTag") as? String
+        Bundle.main.object(forInfoDictionaryKey: "VoxflowBuildTag") as? String
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
             ?? "unknown"
     }
@@ -592,10 +592,18 @@ struct GeneralSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
+                    Text("Created by Raphael Axiom")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text("Developed by DKH Verse")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
                     // GitHub card
                     VStack(spacing: 10) {
                         HStack(spacing: 8) {
-                            AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/992248")) { phase in
+                            AsyncImage(url: URL(string: "https://github.com/raphaelaxiom.png")) { phase in
                                 switch phase {
                                 case .success(let image):
                                     image.resizable().aspectRatio(contentMode: .fill)
@@ -607,9 +615,9 @@ struct GeneralSettingsView: View {
                             .clipShape(Circle())
 
                             Button {
-                                openURL(freeflowRepoURL)
+                                openURL(voxflowRepoURL)
                             } label: {
-                                Text("zachlatta/freeflow")
+                                Text("raphaelaxiom/voxflow")
                                     .font(.system(.caption, design: .monospaced).weight(.medium))
                             }
                             .buttonStyle(.plain)
@@ -634,7 +642,7 @@ struct GeneralSettingsView: View {
                             .background(Capsule().fill(Color.yellow.opacity(0.14)))
 
                             Button {
-                                openURL(freeflowRepoURL)
+                                openURL(voxflowRepoURL)
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: "star")
@@ -973,7 +981,7 @@ struct GeneralSettingsView: View {
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 8) {
-                SecureField("Enter your Groq API key", text: $apiDraft.apiKey)
+                SecureField("Enter your Gemini API key", text: $apiDraft.apiKey)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
                     .disabled(isValidatingKey)
@@ -1079,7 +1087,7 @@ struct GeneralSettingsView: View {
             }
             .pickerStyle(.menu)
 
-            Text("When set, FreeFlow translates your speech into the selected language.")
+            Text("When set, Voxflow translates your speech into the selected language.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1771,7 +1779,7 @@ struct PromptsSettingsView: View {
             )
             .toggleStyle(.switch)
 
-            Text("When enabled, FreeFlow retries or falls back to the literal transcript if post-processing looks like it answered the dictated text instead of cleaning it.")
+            Text("When enabled, Voxflow retries or falls back to the literal transcript if post-processing looks like it answered the dictated text instead of cleaning it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1797,7 +1805,7 @@ struct PromptsSettingsView: View {
 
         let context = AppContext(
             appName: "\(AppName.displayName) Settings",
-            bundleIdentifier: "com.zachlatta.freeflow",
+            bundleIdentifier: "com.voxflow.app",
             windowTitle: "System Prompt Test",
             selectedText: nil,
             currentActivity: "User is testing the system prompt in \(AppName.displayName) settings.",
@@ -1963,7 +1971,7 @@ struct PromptsSettingsView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Toggle("Allow full-desktop screenshot fallback", isOn: $appState.desktopScreenshotFallbackEnabled)
-                Text("When active-window capture fails, FreeFlow can capture the full desktop, including other apps, and send it to your configured context provider. Turn this off to continue without a screenshot when active-window capture fails. Applies to new context captures.")
+                Text("When active-window capture fails, Voxflow can capture the full desktop, including other apps, and send it to your configured context provider. Turn this off to continue without a screenshot when active-window capture fails. Applies to new context captures.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

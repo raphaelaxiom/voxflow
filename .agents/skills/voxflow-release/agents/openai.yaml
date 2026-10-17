@@ -1,0 +1,4 @@
+interface:
+  display_name: "Voxflow Release"
+  short_description: "Prepare and publish Voxflow semver releases."
+  default_prompt: "Prepare a new Voxflow release."

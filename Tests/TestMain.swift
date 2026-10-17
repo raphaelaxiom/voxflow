@@ -1,7 +1,7 @@
 import Foundation
 
 @main
-struct FreeFlowTests {
+struct VoxflowTests {
     static func main() async {
         AppContextServiceTests.run()
         await LLMAPITransportTests.run()
@@ -17,6 +17,7 @@ struct FreeFlowTests {
         TranscriptTextCoreTests.run()
         await TranscriptionServiceTests.run()
         await APIConfigurationDraftTests.run()
-        print("FreeFlowTests passed")
+        DashboardStatsTests.run()
+        print("VoxflowTests passed")
     }
 }
