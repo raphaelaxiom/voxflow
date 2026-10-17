@@ -18,6 +18,8 @@ struct VoxflowTests {
         await TranscriptionServiceTests.run()
         await APIConfigurationDraftTests.run()
         DashboardStatsTests.run()
+        AIProviderTests.run()
+        OverlayPhaseTests.run()
         print("VoxflowTests passed")
     }
 }

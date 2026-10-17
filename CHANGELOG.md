@@ -10,6 +10,33 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [0.1.2] - 2026-10-17
+
+### Added
+
+- Permanent pill: after launch a minimal idle pill (mic glyph, existing black-pill style) stays visible at the top center across all apps and spaces. Every phase — recording, transcribing, feedback, paste-failed, update — returns to the idle pill instead of dismissing. The pill's look is unchanged.
+- AI provider picker in Settings (inside the Dashboard Settings section): Gemini (default) / Groq / Ollama (local) / Custom OpenAI-compatible endpoint. Switching applies immediately — base URL, all four model fields, and that provider's own Keychain-stored API key — because the pipeline reads those fields at call time. Each provider keeps its own key, so switching never clobbers another provider's key.
+- Theme picker in Settings: Light / Dark / System, persisted and applied via `preferredColorScheme`. Light is the premium default.
+- Original AI-generated dashboard banner image (abstract sound-wave "V" ribbon, amber→coral), bundled as `DashboardBanner.png` and shown in the Dashboard hero.
+- Floating bottom tab bar (capsule, material background, spring-animated selection pill) replaces the left sidebar for Dashboard navigation. All 10 sections stay reachable; the bar scrolls on narrow windows so tabs are never clipped.
+- Native SwiftUI motion in the Dashboard, adapted from free web-effect libraries (no React, no copied code): staggered letter rise on headings, word-by-word emerge, wipe reveal on the hero headline, skew slide-in on list headers, outlined VOXFLOW wordmark, 3D image-fold reveal, floating icons, and a slow banner-only gradient mesh. All effects render instantly when macOS Reduce Motion is on, and nothing animates on the pill.
+- Pearl button style (glossy black pill, hover sparkle, press-down) on primary actions; Apple-glass-style buttons elsewhere — frosted glass for secondary, prominent glass for secondary-prominent, red-tinted glass for destructive actions. Glass is implemented as a native SwiftUI shim so the app still builds on macOS 13+ and on the CI toolchain (no deployment-target change).
+- Vendored atoms from the user's SwiftKitComponents library (adapted to macOS): buttons, cards, StatCard, search/styled fields, ToggleRow, SegmentedPicker, toast, shimmer/skeleton, ProgressRing, empty/error states, SettingsRow, history swipe list, status/count badges, and the tab bar. PricingCard and DeleteAccountButton deliberately not used (Voxflow is free and has no accounts).
+
+### Changed
+
+- Single Dashboard window: Settings renders inline as a Dashboard section and Setup renders inline as the first-run section of the same window. No separate Settings or Setup window; the Settings-opens-Dashboard redirect is gone.
+- Dashboard theme follows the pastel-gradient hero: light, airy, rounded-2xl cards, soft shadows, generous spacing. Dark theme is the same layout in deep tones.
+- Gemini polish now runs on `gemini-2.5-flash-lite` (audio transcription stays on `gemini-2.5-flash`); polish token cap reduced 4096 → 2048. Existing installs with the old `gemini-2.5-flash` polish default are migrated to flash-lite automatically.
+- App icon and tray icon re-rendered sharply from the same original concept (three pill bars forming a V + Bézier ribbon sweep, amber→coral gradient) — vector-clean redraw, all six `.icns` sizes regenerated from the new master.
+
+### Fixed
+
+- "Invalid response" dead-end: Gemini transcription now accepts content as a string or an array of content parts, retries once on a parse failure, and reports an actionable message instead of a bare "Invalid response". Polish failures already fell back to the raw transcript; that path is preserved.
+- Language/script: the pipeline now passes the selected language into BOTH transcription and polish. Gemini transcription previously received no language constraint, so it could transcribe Roman-script Hinglish into Devanagari. Output now stays in the same language and script the user spoke; Devanagari is produced only when Output Language is explicitly set to Hindi. If polish still returns Devanagari, it retries once with a stricter script prompt, then falls back to the raw transcript — dictation is never lost.
+- Pill rendering: the overlay panel is now created once and never destroyed per phase (phase changes are content swaps + short resizes), the hosting layer is backed opaque black so no pre-layout frame flashes clear/white, and the compact drop-down top-padding bug is fixed — on notched displays in compact mode the padding previously pushed error/update/paste-failed pill content fully out of the frame, rendering empty black strips.
+- The striped white/dark vertical-bar artifact reported at the top center is addressed by the persistent-panel + opaque-backing fixes above. The exact compositor artifact could not be reproduced without a Mac; if it persists on a real Mac it is likely outside the overlay (e.g. a screenshot/compositor tear) and should be re-reported with a screen recording.
+
 ## [0.1.1] - 2026-10-17
 
 ### Fixed

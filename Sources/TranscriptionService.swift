@@ -60,6 +60,9 @@ class TranscriptionService {
     private let baseURL: URL
     private let transcriptionModel: String
     private let language: String?
+    /// Display name of the transcription language ("Hindi", "English", …),
+    /// used in the Gemini prompt. Nil = auto-detect.
+    private let languageName: String?
     private var transcriptionResponseFormat: String {
         Self.responseFormat(forModel: transcriptionModel)
     }
@@ -72,7 +75,8 @@ class TranscriptionService {
         apiKey: String,
         baseURL: String = "https://generativelanguage.googleapis.com/v1beta/openai",
         transcriptionModel: String = "whisper-large-v3",
-        language: String? = nil
+        language: String? = nil,
+        languageName: String? = nil
     ) throws {
         self.apiKey = apiKey
         self.baseURL = try Self.normalizedBaseURL(from: baseURL)
@@ -80,6 +84,8 @@ class TranscriptionService {
         self.transcriptionModel = trimmedModel.isEmpty ? "whisper-large-v3" : trimmedModel
         let trimmedLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.language = (trimmedLanguage?.isEmpty == false) ? trimmedLanguage : nil
+        let trimmedLanguageName = languageName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.languageName = (trimmedLanguageName?.isEmpty == false) ? trimmedLanguageName : nil
     }
 
     static func responseFormat(forModel model: String) -> String {
@@ -187,12 +193,26 @@ class TranscriptionService {
         apiKey: String,
         model: String,
         audioData: Data,
-        format: String
+        format: String,
+        languageName: String? = nil
     ) -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent("chat").appendingPathComponent("completions"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // The language + script rules matter: without them Gemini may
+        // transcribe Roman-script Hinglish into Devanagari, which the user
+        // did not ask for. The Whisper multipart path already sends the
+        // language code; the Gemini path previously sent nothing.
+        let languageClause: String
+        if let languageName, !languageName.isEmpty {
+            languageClause = "Transcribe this audio verbatim in \(languageName)."
+        } else {
+            languageClause = "Transcribe this audio verbatim in the language the speaker uses."
+        }
+        let prompt = languageClause
+            + " Return only the spoken words, with no commentary, no labels, and no added punctuation beyond what was spoken."
+            + " Write in the SAME script the speaker uses. Never convert Roman-script Hindi/Hinglish into Devanagari script."
         let payload: [String: Any] = [
             "model": model,
             "temperature": 0.0,
@@ -202,7 +222,7 @@ class TranscriptionService {
                     "content": [
                         [
                             "type": "text",
-                            "text": "Transcribe this audio verbatim. Return only the spoken words, with no commentary, no labels, and no added punctuation beyond what was spoken."
+                            "text": prompt
                         ],
                         [
                             "type": "input_audio",
@@ -220,42 +240,65 @@ class TranscriptionService {
     }
 
     /// Extracts the transcript from a Gemini chat-completions response.
+    /// Accepts content as a plain string OR as an array of content parts
+    /// (`[{"type": "text", "text": "..."}]`), which some OpenAI-compatible
+    /// endpoints return. A missing/non-string/non-array content is still
+    /// an invalid response.
     static func parseGeminiChatTranscript(from data: Data) throws -> String {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: Any],
-              let content = message["content"] as? String else {
+              let message = firstChoice["message"] as? [String: Any] else {
             throw TranscriptionResponseParsingError.invalidResponse
         }
-        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let content = message["content"] as? String {
+            return content.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let parts = message["content"] as? [[String: Any]] {
+            let text = parts.compactMap { $0["text"] as? String }.joined()
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        throw TranscriptionResponseParsingError.invalidResponse
     }
 
     private func transcribeAudioViaGeminiChat(fileURL: URL) async throws -> String {
         let audioData = try Data(contentsOf: fileURL)
-        var request = Self.geminiTranscriptionRequest(
-            baseURL: baseURL,
-            apiKey: apiKey,
-            model: transcriptionModel,
-            audioData: audioData,
-            format: Self.geminiAudioFormat(for: fileURL.lastPathComponent)
-        )
-        request.timeoutInterval = transcriptionTimeoutSeconds
-        let (data, response) = try await LLMAPITransport.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw TranscriptionError.submissionFailed("No response from server")
+        // One retry on a parse failure: empty/malformed responses are often
+        // transient (content filtering, truncated payload). After the second
+        // failure the error message is actionable instead of a bare
+        // "Invalid response" dead-end.
+        for attempt in 1...2 {
+            var request = Self.geminiTranscriptionRequest(
+                baseURL: baseURL,
+                apiKey: apiKey,
+                model: transcriptionModel,
+                audioData: audioData,
+                format: Self.geminiAudioFormat(for: fileURL.lastPathComponent),
+                languageName: languageName
+            )
+            request.timeoutInterval = transcriptionTimeoutSeconds
+            let (data, response) = try await LLMAPITransport.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw TranscriptionError.submissionFailed("No response from server")
+            }
+            guard httpResponse.statusCode == 200 else {
+                throw TranscriptionError.submissionFailed(Self.friendlyHTTPMessage(
+                    status: httpResponse.statusCode,
+                    host: baseURL.host
+                ))
+            }
+            do {
+                return try Self.parseGeminiChatTranscript(from: data)
+            } catch {
+                os_log(
+                    .error,
+                    log: transcriptionLog,
+                    "Gemini chat transcript parse failed (attempt %{public}d/2)",
+                    attempt
+                )
+            }
         }
-        guard httpResponse.statusCode == 200 else {
-            throw TranscriptionError.submissionFailed(Self.friendlyHTTPMessage(
-                status: httpResponse.statusCode,
-                host: baseURL.host
-            ))
-        }
-        do {
-            return try Self.parseGeminiChatTranscript(from: data)
-        } catch {
-            throw TranscriptionError.pollFailed("Invalid response")
-        }
+        throw TranscriptionError.pollFailed("Gemini returned an unreadable response — please try again")
     }
 
     private func transcribeAudioWithURLSession(fileURL: URL) async throws -> String {

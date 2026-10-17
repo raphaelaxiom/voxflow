@@ -234,6 +234,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let commandModeStyleStorageKey = "command_mode_style"
     private let commandModeManualModifierStorageKey = "command_mode_manual_modifier"
     private let outputLanguageStorageKey = "output_language"
+    private let aiProviderStorageKey = "ai_provider"
+    private let appThemeStorageKey = "app_theme"
     private let realtimeStreamingEnabledStorageKey = "realtime_streaming_enabled"
     private let realtimeStreamingModelStorageKey = "realtime_streaming_model"
     private let dictationAudioInterruptionEnabledStorageKey = "dictation_audio_interruption_enabled"
@@ -276,7 +278,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         ("hu", "Hungarian"),
         ("ca", "Catalan")
     ]
-    static let defaultPostProcessingModel = "gemini-2.5-flash"
+    static let defaultPostProcessingModel = "gemini-2.5-flash-lite"
     static let defaultPostProcessingFallbackModel = "gemini-3-flash-preview"
     static let defaultContextModel = "gemini-2.5-flash"
     private static let deprecatedDefaultPostProcessingFallbackModel = "meta-llama/llama-4-scout-17b-16e-instruct"
@@ -512,6 +514,30 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Selected AI provider. The pipeline reads `apiBaseURL` + the model
+    /// fields at call time, so switching providers takes effect through
+    /// `applyProvider(_:)` — never a picker that only changes a label.
+    @Published var aiProvider: AIProvider {
+        didSet {
+            UserDefaults.standard.set(aiProvider.storedValue, forKey: aiProviderStorageKey)
+        }
+    }
+
+    /// Selected appearance. Applied by AppDelegate via preferredColorScheme.
+    @Published var appTheme: AppTheme {
+        didSet {
+            UserDefaults.standard.set(appTheme.storedValue, forKey: appThemeStorageKey)
+        }
+    }
+
+    /// Dashboard section shown in the single Dashboard window. AppDelegate
+    /// routes menu-bar / notification navigation here (Settings, Setup).
+    @Published var dashboardSection: DashboardSection = .dictation
+
+    /// When true the Dashboard shows Setup inline instead of the selected
+    /// section (single-panel rule: no separate Setup window).
+    @Published var showingSetupInline: Bool = false
+
     @Published var shortcutStartDelay: TimeInterval {
         didSet {
             UserDefaults.standard.set(shortcutStartDelay, forKey: shortcutStartDelayStorageKey)
@@ -673,7 +699,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
     init() {
         UserDefaults.standard.removeObject(forKey: "force_http2_transcription")
         let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
-        let apiKey = Self.loadStoredAPIKey(account: apiKeyStorageKey)
+        let storedProvider = AIProvider.from(stored: UserDefaults.standard.string(forKey: aiProviderStorageKey))
+        let storedTheme = AppTheme.from(stored: UserDefaults.standard.string(forKey: appThemeStorageKey))
+        let apiKey = Self.loadStoredAPIKey(account: storedProvider.keyAccount ?? apiKeyStorageKey)
         let apiBaseURL = Self.loadStoredAPIBaseURL(account: "api_base_url")
         for key in [contextModelStorageKey, postProcessingModelStorageKey, postProcessingFallbackModelStorageKey] {
             ModelConfiguration.migrateGroqSelection(key: key, baseURL: apiBaseURL, defaults: .standard)
@@ -681,7 +709,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let transcriptionModel = UserDefaults.standard.string(forKey: transcriptionModelStorageKey) ?? Self.defaultTranscriptionModel
         let transcriptionAPIURL = Self.loadOptionalStoredAPIValue(account: transcriptionAPIURLStorageKey)
         let transcriptionAPIKey = Self.loadStoredAPIKey(account: transcriptionAPIKeyStorageKey)
-        let postProcessingModel = UserDefaults.standard.string(forKey: postProcessingModelStorageKey) ?? Self.defaultPostProcessingModel
+        var postProcessingModel = UserDefaults.standard.string(forKey: postProcessingModelStorageKey) ?? Self.defaultPostProcessingModel
+        // Migrate the old polish default (gemini-2.5-flash) to the faster
+        // gemini-2.5-flash-lite. A user-set model is never touched.
+        if postProcessingModel == "gemini-2.5-flash" {
+            postProcessingModel = "gemini-2.5-flash-lite"
+            UserDefaults.standard.set(postProcessingModel, forKey: postProcessingModelStorageKey)
+        }
         let postProcessingFallbackModel = Self.loadStoredPostProcessingFallbackModel(
             key: postProcessingFallbackModelStorageKey
         )
@@ -784,6 +818,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             desktopScreenshotFallbackEnabled: desktopScreenshotFallbackEnabled
         )
         self.hasCompletedSetup = hasCompletedSetup
+        self.aiProvider = storedProvider
+        self.appTheme = storedTheme
         self.apiKey = apiKey
         self.apiBaseURL = apiBaseURL
         self.transcriptionAPIURL = transcriptionAPIURL
@@ -904,11 +940,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func persistAPIKey(_ value: String) {
+        // Per-provider Keychain accounts: each provider keeps its own key,
+        // so switching providers never clobbers another provider's key.
+        let account = aiProvider.keyAccount ?? apiKeyStorageKey
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            AppSettingsStorage.delete(account: apiKeyStorageKey)
+            AppSettingsStorage.delete(account: account)
         } else {
-            AppSettingsStorage.save(trimmed, account: apiKeyStorageKey)
+            AppSettingsStorage.save(trimmed, account: account)
         }
     }
 
@@ -1082,6 +1121,34 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
     }
 
+    /// Switches the AI provider for real: sets the base URL, the four
+    /// model fields, and the per-provider API key (loaded from that
+    /// provider's Keychain account). The pipeline reads these fields at
+    /// call time, so the next dictation/transform uses the new provider.
+    /// The separate transcription URL/key overrides are the user's explicit
+    /// choice and are left untouched.
+    func applyProvider(_ provider: AIProvider) {
+        let key = provider.keyAccount.map { Self.loadStoredAPIKey(account: $0) } ?? ""
+        isApplyingAPIConfiguration = true
+        self.aiProvider = provider
+        self.apiBaseURL = provider.defaultBaseURL
+        self.transcriptionModel = provider.defaultTranscriptionModel
+        self.postProcessingModel = provider.defaultPostProcessingModel
+        self.postProcessingFallbackModel = provider.defaultFallbackModel
+        self.contextModel = provider.defaultContextModel
+        self.apiKey = key
+        isApplyingAPIConfiguration = false
+        persistAPIKey(apiKey)
+        persistAPIBaseURL(apiBaseURL)
+        rebuildContextService()
+        committedAPIConfiguration = ValidatedAPIConfiguration(
+apiKey: <redacted>
+            baseURL: apiBaseURL,
+            transcriptionAPIURL: transcriptionAPIURL,
+            transcriptionAPIKey: transcriptionAPIKey
+        )
+    }
+
     private func rebuildContextService() {
         contextService = makeAppContextService()
     }
@@ -1141,7 +1208,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             apiKey: resolvedTranscriptionAPIKey,
             baseURL: resolvedTranscriptionBaseURL,
             transcriptionModel: transcriptionModel,
-            language: resolvedTranscriptionLanguage
+            language: resolvedTranscriptionLanguage,
+            languageName: Self.dictationLanguageName(for: transcriptionLanguage)
         )
     }
 
@@ -2178,6 +2246,29 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
         playAlertSound(named: "Basso")
         scheduleReadyStatusReset(after: 2, matching: ["Fix Edit Mode modifier"])
+    }
+
+    /// Starts a dictation from the Dashboard's "Start Dictating" button.
+    /// Same path as the toggle hotkey: begins a real recording.
+    func startDictationFromDashboard() {
+        startRecording(triggerMode: .toggle)
+    }
+
+    /// Finishes the inline Setup section (Dashboard-embedded wizard).
+    /// On first run this also flips `hasCompletedSetup` and starts the
+    /// hotkey + accessibility services the standalone wizard used to start.
+    func completeInlineSetup() {
+        showingSetupInline = false
+        guard !hasCompletedSetup else { return }
+        hasCompletedSetup = true
+        startHotkeyMonitoring()
+        startAccessibilityPolling()
+        // First-run completion used to start update checks via AppDelegate;
+        // the inline wizard must do the same, or update checks never start
+        // on a fresh install.
+        Task { @MainActor in
+            UpdateManager.shared.startPeriodicChecks()
+        }
     }
 
     private func startRecording(triggerMode: RecordingTriggerMode) {

@@ -1,4 +1,7 @@
 import Foundation
+import os.log
+
+private let postProcessingLog = OSLog(subsystem: "com.voxflow.app", category: "postprocessing")
 
 enum PostProcessingError: LocalizedError {
     case requestFailed(Int, String)
@@ -10,6 +13,9 @@ enum PostProcessingError: LocalizedError {
     case emptyOutput
     case requestTimedOut(TimeInterval)
     case suspectedInstructionExecution
+    /// The polished output used Devanagari script although the user did not
+    /// choose Hindi as the output language. Triggers one strict-prompt retry.
+    case wrongScript
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +33,18 @@ enum PostProcessingError: LocalizedError {
             "Post-processing timed out after \(Int(seconds))s"
         case .suspectedInstructionExecution:
             "Post-processing output looked like it answered the transcript instead of cleaning it"
+        case .wrongScript:
+            "Post-processing output used Devanagari script although it was not requested"
+        }
+    }
+}
+
+/// Script detection helpers. Devanagari = U+0900–U+097F plus
+/// Devanagari Extended-A U+A8E0–U+A8FF.
+enum ScriptDetection {
+    static func containsDevanagari(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            (0x0900...0x097F).contains(scalar.value) || (0xA8E0...0xA8FF).contains(scalar.value)
         }
     }
 }
@@ -67,6 +85,7 @@ Correctness:
 Language preservation (strict):
 - Keep the speaker's language exactly as spoken. If the speaker mixes Hindi and English in Roman script (Hinglish), output Hinglish in Roman script.
 - NEVER convert Roman-script Hindi or Hinglish into Devanagari script. NEVER rewrite Hinglish into pure English. NEVER translate.
+- Script rule: output in the SAME script as the input. Roman-script input → Roman-script output. NEVER convert Roman-script text into Devanagari (Hindi) script. Devanagari output is allowed ONLY when the user explicitly set Output Language to Hindi.
 - Preserve mixed-language text exactly as mixed.
 - Restore standard accents or diacritics when the intended word is clear, staying in the same script the speaker used.
 
@@ -145,7 +164,7 @@ Behavior:
     private let defaultModel = "openai/gpt-oss-20b"
     private let defaultFallbackModel = "qwen/qwen3.8-27b"
     private let defaultModelReasoningEffort = "low"
-    private let postProcessingMaxCompletionTokens = 4096
+    private let postProcessingMaxCompletionTokens = 2048
     private var postProcessingTimeoutSeconds: TimeInterval {
         let override = UserDefaults.standard.double(forKey: "post_processing_timeout_seconds")
         return override > 0 ? override : 20
@@ -344,6 +363,23 @@ Behavior:
                 dictationLanguage: dictationLanguage
             )
         } catch let error as PostProcessingError {
+            // Wrong-script output gets ONE retry on the SAME model with a stricter
+            // script prompt. If the strict retry still produces Devanagari, the
+            // error propagates and the caller falls back to the raw transcript —
+            // dictation is never lost to a bare "invalid response" dead-end.
+            if case .wrongScript = error {
+                os_log(.error, log: postProcessingLog, "Polish returned Devanagari output; retrying once with a stricter script prompt")
+                return try await process(
+                    transcript: transcript,
+                    contextSummary: contextSummary,
+                    model: primaryModel,
+                    customVocabulary: customVocabulary,
+                    customSystemPrompt: customSystemPrompt,
+                    outputLanguage: outputLanguage,
+                    dictationLanguage: dictationLanguage,
+                    strictScriptRetry: true
+                )
+            }
             // Unified fallback policy: decide whether to retry on the other model.
             let shouldFallback: Bool
             switch error {
@@ -462,7 +498,27 @@ Behavior:
     }
 
     private func resolvedPrimaryModel() -> String {
-        preferredModel.isEmpty ? defaultModel : preferredModel
+        Self.polishModel(for: preferredModel, baseURL: baseURL, defaultModel: defaultModel)
+    }
+
+    /// Polish-step model selection. Gemini polish runs on the cheaper, faster
+    /// `gemini-2.5-flash-lite` (audio transcription stays on `gemini-2.5-flash`,
+    /// chosen in AppState). A stored `gemini-2.5-flash` polish preference from
+    /// an older install is mapped forward the same way. Other providers keep
+    /// their own defaults.
+    static func polishModel(for preferred: String, baseURL: String, defaultModel: String) -> String {
+        let trimmed = preferred.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "gemini-2.5-flash" { return "gemini-2.5-flash-lite" }
+        if !trimmed.isEmpty { return trimmed }
+        if baseURL.contains("generativelanguage.googleapis.com") { return "gemini-2.5-flash-lite" }
+        return defaultModel
+    }
+
+    /// Devanagari output is allowed only when the user explicitly chose Hindi
+    /// as the Output Language. Every other case (including "Same as spoken")
+    /// must stay in the script the user spoke.
+    static func devanagariAllowed(outputLanguage: String) -> Bool {
+        outputLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "hindi"
     }
 
     private func resolvedRetryModel(for primaryModel: String) -> String? {
@@ -485,7 +541,8 @@ Behavior:
         customVocabulary: [String],
         customSystemPrompt: String = "",
         outputLanguage: String = "",
-        dictationLanguage: String = ""
+        dictationLanguage: String = "",
+        strictScriptRetry: Bool = false
     ) async throws -> PostProcessingResult {
         var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
         request.httpMethod = "POST"
@@ -511,6 +568,12 @@ Use these spellings exactly in the output when relevant:
         )
         if !vocabularyPrompt.isEmpty {
             systemPrompt += "\n\n" + vocabularyPrompt
+        }
+        if strictScriptRetry {
+            systemPrompt += """
+
+STRICT SCRIPT RULE — the previous attempt used the wrong script. Rewrite the ENTIRE output in Roman script. Do not use a single Devanagari character anywhere in the output. Keep the speaker's language and words, only the script must be Roman.
+"""
         }
 
         let userMessage = """
@@ -602,6 +665,11 @@ Model: \(model)
             outputLanguage: outputLanguage
         ) {
             throw PostProcessingError.suspectedInstructionExecution
+        }
+        if !Self.devanagariAllowed(outputLanguage: outputLanguage),
+           ScriptDetection.containsDevanagari(sanitizedTranscript) {
+            os_log(.error, log: postProcessingLog, "Polish output contained Devanagari although Output Language is not Hindi")
+            throw PostProcessingError.wrongScript
         }
         return PostProcessingResult(
             transcript: sanitizedTranscript,
@@ -765,7 +833,13 @@ Model: \(model)
     /// "Primarily" and the carve-out keep this consistent with the prompt's own
     /// "Preserve mixed-language text exactly as mixed" rule.
     static func applyDictationLanguage(_ prompt: String, language: String) -> String {
-        prompt + "\n\nIMPORTANT: The dictation is primarily in \(language). Write the cleaned text in \(language). Preserve mixed-language words and spans in their original languages."
+        if language == "Hindi" {
+            // Hindi dictation must stay in Roman script (Hinglish) unless the
+            // user explicitly set Output Language to Hindi. The model's
+            // default instinct is Devanagari for Hindi — block it explicitly.
+            return prompt + "\n\nIMPORTANT: The dictation is primarily in Hindi. Write the cleaned text in Hindi using ROMAN script (never Devanagari) — Hinglish in Roman script. Preserve mixed-language words and spans in their original languages."
+        }
+        return prompt + "\n\nIMPORTANT: The dictation is primarily in \(language). Write the cleaned text in \(language). Preserve mixed-language words and spans in their original languages."
     }
 
     /// System prompt used for verbatim translation. Deliberately

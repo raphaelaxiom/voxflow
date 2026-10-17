@@ -4,7 +4,9 @@ import AppKit
 // MARK: - State
 
 final class RecordingOverlayState: ObservableObject {
-    @Published var phase: OverlayPhase = .recording
+    /// The pill starts idle: a permanent minimal pill is on screen from
+    /// launch, and every phase returns here instead of dismissing.
+    @Published var phase: OverlayPhase = .idle
     @Published var recordingStartedAt: ContinuousClock.Instant?
     @Published var showsRecordingTimer = RecordingTimerPreference.defaultEnabled
     @Published var audioLevel: Float = 0.0
@@ -15,17 +17,6 @@ final class RecordingOverlayState: ObservableObject {
     @Published var toastID: UUID?
     @Published var pasteFailureText: String?
     @Published var pasteFailureID: UUID?
-}
-
-enum OverlayPhase {
-    case initializing
-    case recording
-    case transcribing
-    case feedback
-    case updateAvailable
-    /// Dictation finished but no text field had focus, so nothing was
-    /// pasted. The pill offers "Text not pasted. Click here to copy text."
-    case pasteFailed
 }
 
 // MARK: - NSScreen Helpers
@@ -74,6 +65,12 @@ private func makeNotchContent<V: View>(
     let hosting = NSHostingView(rootView: shaped)
     hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
     hosting.autoresizingMask = [.width, .height]
+    // Opaque black backing behind the SwiftUI content: NSHostingView lays
+    // out asynchronously, so the first frame(s) of a fresh panel could
+    // otherwise flash clear/white through the transparent panel. Black
+    // matches the pill, so any pre-layout frame is invisible.
+    hosting.wantsLayer = true
+    hosting.layer?.backgroundColor = NSColor.black.cgColor
     return hosting
 }
 
@@ -136,6 +133,23 @@ final class RecordingOverlayManager {
         (overlayState.phase == .recording && overlayState.recordingTriggerMode == .toggle)
             || overlayState.phase == .updateAvailable
             || overlayState.phase == .pasteFailed
+    }
+
+    /// Shows the permanent idle pill: a minimal black pill with a mic glyph.
+    /// Called once at launch; the panel then persists for the app's life.
+    /// Never steals focus, ignores mouse events.
+    func showIdle() {
+        DispatchQueue.main.async {
+            self.lockedOverlayWidth = nil
+            self.overlayState.recordingStartedAt = nil
+            self.overlayState.isCommandMode = false
+            self.overlayState.errorMessage = nil
+            self.overlayState.toastID = nil
+            self.overlayState.pasteFailureText = nil
+            self.overlayState.pasteFailureID = nil
+            self.overlayState.phase = .idle
+            self.showOverlayPanel(animatedResize: false)
+        }
     }
 
     func showInitializing(mode: RecordingTriggerMode = .hold, isCommandMode: Bool = false) {
@@ -366,6 +380,20 @@ final class RecordingOverlayManager {
             )
         }
 
+        // Top padding is ONLY for the legacy drop-down height
+        // (38 + notchOverlap), where the panel extends above the menu-bar
+        // area by notchOverlap. In compact mode the panel height IS
+        // notchOverlap, so the same padding pushed the content fully out
+        // of the frame — error/update/paste-failed pills rendered as
+        // empty black strips on notched displays in compact mode.
+        // Mirror overlayFrame: compact height iff compact is on and this
+        // phase does not force the drop-down height.
+        let useCompact = (UserDefaults.standard.object(forKey: "use_compact_overlay") as? Bool) ?? true
+        let forceDropDownPill = (overlayState.phase == .feedback
+            && !(overlayState.errorMessage?.isEmpty ?? true))
+            || overlayState.phase == .pasteFailed
+        let isCompactHeight = useCompact && !forceDropDownPill
+        let topPadding: CGFloat = (screenHasNotch && !isCompactHeight) ? notchOverlap : 0
         return makeNotchContent(
             width: frame.width,
             height: frame.height,
@@ -386,7 +414,7 @@ final class RecordingOverlayManager {
                         self?.dismissPasteFailure()
                     }
                 )
-                .padding(.top, screenHasNotch ? notchOverlap : 0)
+                .padding(.top, topPadding)
             )
         )
     }
@@ -419,6 +447,11 @@ final class RecordingOverlayManager {
         case .updateAvailable:
             return false
         case .pasteFailed:
+            return false
+        case .idle:
+            // Idle is always the drop-down pill (a notch-width black pill
+            // with a centered mic), never wings — empty wings would read
+            // as a black strip across the menu bar.
             return false
         }
     }
@@ -501,6 +534,14 @@ final class RecordingOverlayManager {
             return max(notchWidth, pasteFailedWidth)
         }
 
+        if overlayState.phase == .idle {
+            // Minimal idle pill: 64pt on plain displays; on notched
+            // displays it spans the notch width like the other pills.
+            let idleWidth: CGFloat = 64
+            guard screenHasNotch else { return idleWidth }
+            return max(notchWidth, idleWidth)
+        }
+
         let commandModeWidth: CGFloat = 180
         let toggleWidth: CGFloat = 150
         let defaultWidth: CGFloat = 92
@@ -529,25 +570,25 @@ final class RecordingOverlayManager {
     }
 
     private func dismissAll() {
+        // "Dismiss" now means "return to the permanent idle pill". The panel
+        // is created once (at launch, via showIdle) and never ordered out or
+        // destroyed until quit: per-phase create/destroy churn was tearing
+        // frames during show/dismiss animation. Phase changes are content
+        // swaps + short resizes on the same panel.
         lockedOverlayWidth = nil
         overlayState.recordingStartedAt = nil
         overlayState.isCommandMode = false
         overlayState.updateVersion = ""
+        overlayState.errorMessage = nil
+        overlayState.toastID = nil
         let hadPasteFailure = overlayState.pasteFailureText != nil
         overlayState.pasteFailureText = nil
         overlayState.pasteFailureID = nil
         if hadPasteFailure {
             onPasteFailureDismissed?()
         }
-        if let panel = overlayWindow {
-            panel.orderOut(nil)
-            // orderOut alone leaves the panel retained in NSApp.windows with its
-            // SwiftUI hierarchy mounted — repeatForever animations keep flushing
-            // Core Animation forever. Unmount and close so the panel deallocates.
-            panel.contentView = nil
-            panel.close()
-            overlayWindow = nil
-        }
+        overlayState.phase = .idle
+        updateOverlayLayout(animated: true)
     }
 }
 
@@ -1039,7 +1080,9 @@ struct RecordingOverlayView: View {
 
     var body: some View {
         Group {
-            if state.phase == .feedback, let message = state.errorMessage {
+            if state.phase == .idle {
+                IdlePillView()
+            } else if state.phase == .feedback, let message = state.errorMessage {
                 ErrorOverlayView(message: message)
             } else if state.phase == .feedback {
                 FailureIndicatorView()
@@ -1211,6 +1254,19 @@ struct PasteFailureOverlayView: View {
             .buttonStyle(.plain)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+/// Permanent idle pill content: a single mic glyph in the existing pill
+/// style (black pill, white glyph). No text, no animation, no mouse
+/// handling — the manager keeps the panel mouse-ignoring in this phase.
+struct IdlePillView: View {
+    var body: some View {
+        Image(systemName: "mic.fill")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.92))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityLabel("Voxflow is ready")
     }
 }
 

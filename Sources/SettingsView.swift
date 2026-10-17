@@ -501,7 +501,12 @@ struct DebugSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        Toggle("Show after dictation", isOn: $appState.debugShowsUpdateReminderAfterDictation)
+                        ToggleRow(
+                            icon: "arrow.down.circle",
+                            title: "Show after dictation",
+                            subtitle: "Show the update reminder after a dictation finishes.",
+                            isOn: $appState.debugShowsUpdateReminderAfterDictation
+                        )
 
                         Button("Show Update Overlay Now") {
                             appState.showDebugUpdateAvailableOverlay()
@@ -709,8 +714,14 @@ struct GeneralSettingsView: View {
                 SettingsCard("Updates", icon: "arrow.triangle.2.circlepath") {
                     updatesSection
                 }
+                SettingsCard("AI Provider", icon: "cpu") {
+                    providerSection
+                }
                 SettingsCard("API Key", icon: "key.fill") {
                     apiKeySection
+                }
+                SettingsCard("Appearance", icon: "sun.max.fill") {
+                    themeSection
                 }
                 SettingsCard("Output Language", icon: "globe") {
                     outputLanguageSection
@@ -972,6 +983,83 @@ struct GeneralSettingsView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: resetWorkItem)
     }
 
+    // MARK: AI Provider + Appearance
+
+    /// Working provider picker: switching calls `applyProvider`, which sets
+    /// the base URL, all four model fields, and the per-provider API key —
+    /// the pipeline reads those fields at call time, so the next dictation
+    /// uses the new provider. The key field below refreshes from the new
+    /// provider's saved key via `apiDraft.present`.
+    private var providerSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("The provider powering transcription + polish. Switching applies immediately — base URL, models, and that provider's saved API key.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            SegmentedPicker(
+                options: AIProvider.allCases.map(\.shortTitle),
+                selection: providerIndex
+            )
+            Text(appState.aiProvider.subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                StatusBadge(status: providerKeyStatus)
+                Text(providerKeyStatusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var providerIndex: Binding<Int> {
+        Binding(
+            get: { AIProvider.allCases.firstIndex(of: appState.aiProvider) ?? 0 },
+            set: {
+                appState.applyProvider(AIProvider.allCases[$0])
+                apiDraft.present(appState.committedAPIConfiguration)
+            }
+        )
+    }
+
+    private var providerKeyStatus: Status {
+        if !appState.aiProvider.requiresAPIKey { return .active }
+        return appState.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .pending : .active
+    }
+
+    private var providerKeyStatusText: String {
+        switch appState.aiProvider {
+        case .ollama:
+            return "No key needed — Ollama runs locally."
+        case .custom:
+            return appState.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "No key saved — enter one below if your endpoint needs it."
+                : "API key saved for this endpoint."
+        default:
+            return appState.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "API key needed — enter it below."
+                : "API key saved."
+        }
+    }
+
+    private var themeSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Light is the premium default. Dark follows the same layout in deep tones. System follows macOS.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            SegmentedPicker(
+                options: AppTheme.allCases.map(\.title),
+                selection: themeIndex
+            )
+        }
+    }
+
+    private var themeIndex: Binding<Int> {
+        Binding(
+            get: { AppTheme.allCases.firstIndex(of: appState.appTheme) ?? 0 },
+            set: { appState.appTheme = AppTheme.allCases[$0] }
+        )
+    }
+
     // MARK: API Key
 
     private var apiKeySection: some View {
@@ -980,26 +1068,35 @@ struct GeneralSettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            HStack(spacing: 8) {
-                SecureField("Enter your Gemini API key", text: $apiDraft.apiKey)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-                    .disabled(isValidatingKey)
+            // Custom endpoints may need a key even though local servers
+            // don't — show the field for Custom too. Ollama never needs one.
+            if appState.aiProvider.requiresAPIKey || appState.aiProvider == .custom {
+                HStack(spacing: 8) {
+                    SecureField("Enter your \(appState.aiProvider.title) API key", text: $apiDraft.apiKey)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .disabled(isValidatingKey)
 
-                Button(isValidatingKey ? "Validating..." : "Save") {
-                    validateAndSaveKey()
+                    Button(isValidatingKey ? "Validating..." : "Save") {
+                        validateAndSaveKey()
+                    }
+                    .disabled(apiDraft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isValidatingKey)
                 }
-                .disabled(apiDraft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isValidatingKey)
-            }
 
-            if let error = keyValidationError {
-                Label(error, systemImage: "xmark.circle.fill")
-                    .foregroundStyle(.red)
+                if let error = keyValidationError {
+                    Label(error, systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                } else if apiDraft.showsSavedSuccess(successfulAPIConfiguration, committed: appState.committedAPIConfiguration) {
+                    Label("API key saved", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                }
+            } else {
+                // Ollama runs locally and never needs a key.
+                Text(providerKeyStatusText)
                     .font(.caption)
-            } else if apiDraft.showsSavedSuccess(successfulAPIConfiguration, committed: appState.committedAPIConfiguration) {
-                Label("API key saved", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             DisclosureGroup(isExpanded: $advancedProviderSettingsExpanded) {

@@ -68,5 +68,52 @@ enum TranscriptionServiceTests {
             validator: { _, _ in true }
         ) { fallbackApplied = $0 }
         TestSupport.expect(fallbackValid && fallbackApplied?.transcriptionAPIURL.isEmpty == true && fallbackApplied?.transcriptionAPIKey.isEmpty == true, "Empty transcription overrides preserve fallback semantics without a partial override")
+
+        // Gemini transcription request: language + script rule.
+        let geminiURL = URL(string: "https://generativelanguage.googleapis.com/v1beta/openai")!
+        let hindiRequest = TranscriptionService.geminiTranscriptionRequest(
+            baseURL: geminiURL,
+apiKey: <redacted>
+            model: "gemini-2.5-flash",
+            audioData: Data([0, 1, 2]),
+            format: "wav",
+            languageName: "Hindi"
+        )
+        let hindiPrompt = Self.promptText(of: hindiRequest)
+        TestSupport.expect(hindiPrompt.contains("in Hindi"), "Gemini prompt must name the selected language")
+        TestSupport.expect(hindiPrompt.contains("Never convert Roman-script"), "Gemini prompt must carry the script rule")
+        let autoRequest = TranscriptionService.geminiTranscriptionRequest(
+            baseURL: geminiURL,
+apiKey: <redacted>
+            model: "gemini-2.5-flash",
+            audioData: Data([0, 1, 2]),
+            format: "wav"
+        )
+        TestSupport.expect(Self.promptText(of: autoRequest).contains("in the language the speaker uses"), "Auto-detect Gemini prompt must not invent a language")
+        TestSupport.expect(Self.promptText(of: autoRequest).contains("Never convert Roman-script"), "Auto-detect Gemini prompt must still carry the script rule")
+
+        // Gemini content-parts parsing: some OpenAI-compatible endpoints
+        // return content as [{"type": "text", "text": "..."}].
+        let partsJSON = """
+        {"choices": [{"message": {"content": [{"type": "text", "text": "Hello "}, {"type": "text", "text": "world"}]}}]}
+        """.data(using: .utf8)!
+        TestSupport.expectEqual(try? TranscriptionService.parseGeminiChatTranscript(from: partsJSON), "Hello world")
+        let stringJSON = """
+        {"choices": [{"message": {"content": "  Plain transcript  "}}]}
+        """.data(using: .utf8)!
+        TestSupport.expectEqual(try? TranscriptionService.parseGeminiChatTranscript(from: stringJSON), "Plain transcript")
+        let missingJSON = """
+        {"choices": [{"message": {}}]}
+        """.data(using: .utf8)!
+        TestSupport.expect((try? TranscriptionService.parseGeminiChatTranscript(from: missingJSON)) == nil, "Missing content is still an invalid response")
+    }
+
+    private static func promptText(of request: URLRequest) -> String {
+        guard let body = request.httpBody,
+              let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let messages = json["messages"] as? [[String: Any]],
+              let content = messages.first?["content"] as? [[String: Any]],
+              let text = content.first?["text"] as? String else { return "" }
+        return text
     }
 }
