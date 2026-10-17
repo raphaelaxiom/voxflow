@@ -2249,9 +2249,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     /// Starts a dictation from the Dashboard's "Start Dictating" button.
-    /// Same path as the toggle hotkey: begins a real recording.
+    /// EXACTLY the menu item's flow (toggleRecording): begins a real
+    /// recording, or stops + transcribes if one is already running.
+    /// Previously this called startRecording directly, skipping the
+    /// manual-session setup the menu path performs.
     func startDictationFromDashboard() {
-        startRecording(triggerMode: .toggle)
+        toggleRecording()
     }
 
     /// Finishes the inline Setup section (Dashboard-embedded wizard).

@@ -17,6 +17,16 @@ final class RecordingOverlayState: ObservableObject {
     @Published var toastID: UUID?
     @Published var pasteFailureText: String?
     @Published var pasteFailureID: UUID?
+
+    /// Layout snapshot the manager publishes before every layout pass.
+    /// The single hosted overlay view reads ONLY these (never recomputes
+    /// layout), so the panel frame and the hosted content can never
+    /// disagree — and a phase change never rebuilds the hosting view.
+    @Published var useWingedLayout = false
+    @Published var activeWingWidth: CGFloat = 36
+    @Published var overlayTopPadding: CGFloat = 0
+    @Published var overlayNotchWidth: CGFloat = 0
+    @Published var overlayCornerRadius: CGFloat = 12
 }
 
 // MARK: - NSScreen Helpers
@@ -51,27 +61,57 @@ private func makeOverlayPanel(width: CGFloat, height: CGFloat) -> NSPanel {
     return panel
 }
 
-private func makeNotchContent<V: View>(
-    width: CGFloat,
-    height: CGFloat,
-    cornerRadius: CGFloat,
-    rootView: V
-) -> NSView {
-    let shaped = rootView
-        .frame(width: width, height: height)
-        .background(Color.black)
-        .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: cornerRadius, bottomTrailingRadius: cornerRadius))
+// MARK: - Hosted overlay content (single hosting view for the panel's life)
 
-    let hosting = NSHostingView(rootView: shaped)
-    hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
-    hosting.autoresizingMask = [.width, .height]
-    // Opaque black backing behind the SwiftUI content: NSHostingView lays
-    // out asynchronously, so the first frame(s) of a fresh panel could
-    // otherwise flash clear/white through the transparent panel. Black
-    // matches the pill, so any pre-layout frame is invisible.
-    hosting.wantsLayer = true
-    hosting.layer?.backgroundColor = NSColor.black.cgColor
-    return hosting
+/// The overlay panel's ONE hosted view. The manager creates it once
+/// when the panel is created and never replaces it: every phase change
+/// re-renders this view from `state` (plus the layout snapshot the
+/// manager publishes in `syncOverlayLayoutState()`).
+///
+/// Why: replacing the panel's `contentView` (a fresh NSHostingView) on
+/// every phase change let AppKit composite transient frames while the
+/// new hosting view laid out asynchronously — the white-flash /
+/// double-bar artifact at the top of the screen. One hosted view =
+/// one pill, always. The panel frame still animates on phase changes
+/// (see `resize`), so the hotkey animation plays on that single pill.
+private struct OverlayContentView: View {
+    @ObservedObject var state: RecordingOverlayState
+    let onStopButtonPressed: () -> Void
+    let onUpdateOverlayPressed: () -> Void
+    let onCopyPasteFailure: () -> Void
+    let onDismissPasteFailure: () -> Void
+
+    var body: some View {
+        GeometryReader { geo in
+            Group {
+                if state.useWingedLayout {
+                    WingedRecordingView(
+                        state: state,
+                        leftWingWidth: state.activeWingWidth,
+                        notchWidth: state.overlayNotchWidth,
+                        rightWingWidth: state.activeWingWidth,
+                        height: geo.size.height,
+                        onStopButtonPressed: onStopButtonPressed
+                    )
+                } else {
+                    RecordingOverlayView(
+                        state: state,
+                        onStopButtonPressed: onStopButtonPressed,
+                        onUpdateOverlayPressed: onUpdateOverlayPressed,
+                        onCopyPasteFailure: onCopyPasteFailure,
+                        onDismissPasteFailure: onDismissPasteFailure
+                    )
+                    .padding(.top, state.overlayTopPadding)
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .background(Color.black)
+            .clipShape(UnevenRoundedRectangle(
+                bottomLeadingRadius: state.overlayCornerRadius,
+                bottomTrailingRadius: state.overlayCornerRadius
+            ))
+        }
+    }
 }
 
 // MARK: - Manager
@@ -312,12 +352,60 @@ final class RecordingOverlayManager {
         }
     }
 
+    /// Publishes the layout snapshot the hosted view renders from.
+    /// Called before every frame computation, so the panel frame and
+    /// the hosted content always agree. Assigns only on change:
+    /// @Published fires even for equal values, and needless re-renders
+    /// would re-run the overlay animations.
+    private func syncOverlayLayoutState() {
+        let useCompact = (UserDefaults.standard.object(forKey: "use_compact_overlay") as? Bool) ?? true
+        let forceDropDownPill = (overlayState.phase == .feedback
+            && !(overlayState.errorMessage?.isEmpty ?? true))
+            || overlayState.phase == .pasteFailed
+        let isCompactHeight = useCompact && !forceDropDownPill
+        let topPadding: CGFloat = (screenHasNotch && !isCompactHeight) ? notchOverlap : 0
+        let winged = useWingedLayout
+        let wingWidth = activeWingWidth
+        let cornerRadius: CGFloat = winged ? 14 : (screenHasNotch ? 18 : 12)
+        if overlayState.useWingedLayout != winged { overlayState.useWingedLayout = winged }
+        if overlayState.activeWingWidth != wingWidth { overlayState.activeWingWidth = wingWidth }
+        if overlayState.overlayTopPadding != topPadding { overlayState.overlayTopPadding = topPadding }
+        if overlayState.overlayNotchWidth != notchWidth { overlayState.overlayNotchWidth = notchWidth }
+        if overlayState.overlayCornerRadius != cornerRadius { overlayState.overlayCornerRadius = cornerRadius }
+    }
+
+    /// Builds the panel's ONE hosting view. Called once when the panel
+    /// is created; never again for the panel's life. Phase changes
+    /// re-render this view from `overlayState` instead of replacing it.
+    private func makeOverlayHostingView(frame: NSRect) -> NSView {
+        let content = OverlayContentView(
+            state: overlayState,
+            onStopButtonPressed: { [weak self] in self?.onStopButtonPressed?() },
+            onUpdateOverlayPressed: { [weak self] in self?.onUpdateOverlayPressed?() },
+            onCopyPasteFailure: { [weak self] in self?.onCopyPasteFailure?() },
+            onDismissPasteFailure: { [weak self] in self?.dismissPasteFailure() }
+        )
+        let hosting = NSHostingView(rootView: content)
+        hosting.frame = NSRect(x: 0, y: 0, width: frame.width, height: frame.height)
+        hosting.autoresizingMask = [.width, .height]
+        // Opaque black backing behind the SwiftUI content: NSHostingView lays
+        // out asynchronously, so the first frame(s) of a fresh panel could
+        // otherwise flash clear/white through the transparent panel. Black
+        // matches the pill, so any pre-layout frame is invisible.
+        hosting.wantsLayer = true
+        hosting.layer?.backgroundColor = NSColor.black.cgColor
+        return hosting
+    }
+
     private func showOverlayPanel(animatedResize: Bool) {
+        syncOverlayLayoutState()
         let frame = overlayFrame
 
         if let panel = overlayWindow {
+            // Content re-renders from `overlayState` — never replace the
+            // hosting view here (see OverlayContentView). Only the frame
+            // changes, animated, on this one panel.
             panel.ignoresMouseEvents = !overlayAcceptsMouseEvents
-            panel.contentView = makeOverlayContent(frame: frame)
             resize(panel: panel, to: frame, animated: animatedResize)
             panel.alphaValue = 1
             panel.orderFrontRegardless()
@@ -327,7 +415,7 @@ final class RecordingOverlayManager {
         let panel = makeOverlayPanel(width: frame.width, height: frame.height)
         panel.hasShadow = false
         panel.ignoresMouseEvents = !overlayAcceptsMouseEvents
-        panel.contentView = makeOverlayContent(frame: frame)
+        panel.contentView = makeOverlayHostingView(frame: frame)
 
         guard let screen = targetScreen else { return }
 
@@ -347,9 +435,9 @@ final class RecordingOverlayManager {
 
     private func updateOverlayLayout(animated: Bool) {
         guard let panel = overlayWindow else { return }
+        syncOverlayLayoutState()
         let frame = overlayFrame
         panel.ignoresMouseEvents = !overlayAcceptsMouseEvents
-        panel.contentView = makeOverlayContent(frame: frame)
         resize(panel: panel, to: frame, animated: animated)
     }
 
@@ -357,66 +445,6 @@ final class RecordingOverlayManager {
         lockedOverlayWidth = overlayWindow?.frame.width ?? overlayWidth
         overlayState.phase = .transcribing
         showOverlayPanel(animatedResize: true)
-    }
-
-    private func makeOverlayContent(frame: NSRect) -> NSView {
-        if useWingedLayout {
-            // Winged layout: notch x-range stays solid black so the cutout masks it.
-            let rootView = WingedRecordingView(
-                state: overlayState,
-                leftWingWidth: activeWingWidth,
-                notchWidth: notchWidth,
-                rightWingWidth: activeWingWidth,
-                height: frame.height,
-                onStopButtonPressed: { [weak self] in
-                    self?.onStopButtonPressed?()
-                }
-            )
-            return makeNotchContent(
-                width: frame.width,
-                height: frame.height,
-                cornerRadius: 14,
-                rootView: AnyView(rootView)
-            )
-        }
-
-        // Top padding is ONLY for the legacy drop-down height
-        // (38 + notchOverlap), where the panel extends above the menu-bar
-        // area by notchOverlap. In compact mode the panel height IS
-        // notchOverlap, so the same padding pushed the content fully out
-        // of the frame — error/update/paste-failed pills rendered as
-        // empty black strips on notched displays in compact mode.
-        // Mirror overlayFrame: compact height iff compact is on and this
-        // phase does not force the drop-down height.
-        let useCompact = (UserDefaults.standard.object(forKey: "use_compact_overlay") as? Bool) ?? true
-        let forceDropDownPill = (overlayState.phase == .feedback
-            && !(overlayState.errorMessage?.isEmpty ?? true))
-            || overlayState.phase == .pasteFailed
-        let isCompactHeight = useCompact && !forceDropDownPill
-        let topPadding: CGFloat = (screenHasNotch && !isCompactHeight) ? notchOverlap : 0
-        return makeNotchContent(
-            width: frame.width,
-            height: frame.height,
-            cornerRadius: screenHasNotch ? 18 : 12,
-            rootView: AnyView(
-                RecordingOverlayView(
-                    state: overlayState,
-                    onStopButtonPressed: { [weak self] in
-                        self?.onStopButtonPressed?()
-                    },
-                    onUpdateOverlayPressed: { [weak self] in
-                        self?.onUpdateOverlayPressed?()
-                    },
-                    onCopyPasteFailure: { [weak self] in
-                        self?.onCopyPasteFailure?()
-                    },
-                    onDismissPasteFailure: { [weak self] in
-                        self?.dismissPasteFailure()
-                    }
-                )
-                .padding(.top, topPadding)
-            )
-        )
     }
 
     private func resize(panel: NSPanel, to frame: NSRect, animated: Bool) {

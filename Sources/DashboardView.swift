@@ -345,10 +345,16 @@ struct DashboardView: View {
                         appState.startDictationFromDashboard()
                     }
                     .buttonStyle(.pearl)
+                    // Full-button hit-testing: the whole button rect —
+                    // background and text — must fire the action.
+                    .contentShape(Rectangle())
+                    .allowsHitTesting(true)
                     Button("See how it works") {
                         selectedSection = .help
                     }
                     .buttonStyle(.voxflowGlass)
+                    .contentShape(Rectangle())
+                    .allowsHitTesting(true)
                 }
                 .padding(.top, 2)
                 if let banner = dashboardBannerImage {
@@ -389,6 +395,7 @@ struct DashboardView: View {
                         Image(systemName: playingItemID == item.id ? "stop.fill" : "play.fill")
                     }
                     .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                     .help(playingItemID == item.id ? "Stop playback" : "Play recording")
                 }
                 Button {
@@ -397,6 +404,7 @@ struct DashboardView: View {
                     Image(systemName: copiedItemID == item.id ? "checkmark" : "doc.on.doc")
                 }
                 .buttonStyle(.plain)
+                .contentShape(Rectangle())
                 .help("Copy text")
                 Button {
                     appState.deleteHistoryItem(item)
@@ -404,6 +412,7 @@ struct DashboardView: View {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.plain)
+                .contentShape(Rectangle())
                 .help("Delete this dictation")
             }
             .foregroundStyle(.secondary)

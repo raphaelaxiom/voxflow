@@ -561,6 +561,7 @@ struct CustomTabBar: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                     .help(tabs[i].label)
                     .accessibilityLabel(tabs[i].label)
                 }

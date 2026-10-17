@@ -10,6 +10,14 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [0.1.3] - 2026-10-17
+
+### Fixed
+
+- Pill double-bar: the overlay now hosts its SwiftUI content in ONE `NSHostingView` created once when the panel is created and never replaced. Previously the panel's `contentView` was replaced with a fresh hosting view on every phase change, letting AppKit composite transient frames while the new view laid out — the white bar segment next to the black pill. Phase changes now re-render the same hosted view from published state (the panel frame still animates, so the hotkey animation plays on that single pill). The panel itself is still created once, permanent at the top, opaque black throughout.
+- Dashboard hero buttons: "Start Dictating" now runs exactly the menu item's flow (`toggleRecording` — begins a real recording, or stops + transcribes if one is already running) instead of a narrower direct-start path that skipped the manual-session setup. "See how it works" opens the real Help section, as before. Both buttons now carry an explicit full-rect hit area.
+- Button hit-testing: pearl, glass, and prominent-glass button styles now declare an explicit full-rectangle hit area, so clicking anywhere on a button — its background or its text label — fires the action. The same full-rect hit area is applied to the Dashboard tab-bar buttons and the TODAY list row buttons (play / copy / delete).
+
 ## [0.1.2] - 2026-10-17
 
 ### Added

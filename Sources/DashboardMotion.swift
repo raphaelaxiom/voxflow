@@ -482,6 +482,11 @@ private struct PearlButtonContent: View {
                     .foregroundStyle(.white.opacity(hovering ? 0.95 : 0))
                     .padding(.trailing, 12)
             }
+            // Full-rect hit area: clicking ANYWHERE on the button —
+            // its background, its gloss, or its text label — must fire
+            // the action. Without an explicit contentShape, decorative
+            // overlays can shrink the hit area on macOS.
+            .contentShape(Rectangle())
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
             .offset(y: configuration.isPressed ? 1 : 0)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
@@ -523,6 +528,9 @@ struct VoxflowGlassButtonStyle: ButtonStyle {
                 Capsule()
                     .stroke(Color.primary.opacity(0.12), lineWidth: 0.75)
             )
+            // Full-rect hit area (see PearlButtonStyle): the whole
+            // button — background, stroke, and text — must fire.
+            .contentShape(Rectangle())
             .opacity(configuration.isPressed ? 0.72 : 1)
             .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
             .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
@@ -554,6 +562,9 @@ struct VoxflowGlassProminentButtonStyle: ButtonStyle {
                 Capsule()
                     .stroke(Color.white.opacity(0.35), lineWidth: 0.75)
             )
+            // Full-rect hit area (see PearlButtonStyle): the whole
+            // button — background, stroke, and text — must fire.
+            .contentShape(Rectangle())
             .opacity(configuration.isPressed ? 0.8 : 1)
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
             .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
