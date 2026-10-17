@@ -27,6 +27,8 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/TranscriptTextCore.swift \
 	Sources/TemperatureCapabilityCache.swift \
 	Sources/DashboardStats.swift \
+	Sources/DashboardStores.swift \
+	Sources/PipelineHistoryItem.swift \
 	Sources/TranscriptionService.swift \
 	Sources/UpdateManager.swift \
 	Sources/ShortcutCore/DictationShortcutSessionController.swift \

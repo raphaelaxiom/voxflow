@@ -11,6 +11,11 @@ permissions:
 jobs:
   build-and-release:
     runs-on: macos-latest
+    env:
+      # "true"/"false" string: whether a Developer ID certificate is
+      # configured. Signing/notarization steps gate on this; without a
+      # certificate the build falls back to ad-hoc signing ("-").
+      HAS_SIGNING_CERT: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,7 +77,7 @@ jobs:
           echo "CODESIGN_IDENTITY=-" >> "$GITHUB_ENV"
 
       - name: Import Developer ID certificate
-        if: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 != '' }}
+        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
         env:
           CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
@@ -112,7 +117,7 @@ jobs:
           echo "Found signing identity: $IDENTITY"
 
       - name: Store notarization credentials
-        if: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 != '' }}
+        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -150,7 +155,7 @@ jobs:
         run: codesign --force --sign "$CODESIGN_IDENTITY" build/Voxflow.dmg
 
       - name: Notarize universal DMG
-        if: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 != '' }}
+        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
         run: |
           xcrun notarytool submit build/Voxflow.dmg \
             --keychain-profile "notarytool-profile" \
