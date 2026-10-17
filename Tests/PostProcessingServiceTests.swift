@@ -201,7 +201,7 @@ enum PostProcessingServiceTests {
         let recorder = RequestRecorder()
         let counter = AttemptCounter()
         let service = PostProcessingService(
-apiKey: <redacted>
+            apiKey: "test",
             baseURL: "https://example.invalid/v1",
             preferredModel: "synthetic-primary",
             preferredFallbackModel: "synthetic-fallback",

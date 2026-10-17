@@ -73,7 +73,7 @@ enum TranscriptionServiceTests {
         let geminiURL = URL(string: "https://generativelanguage.googleapis.com/v1beta/openai")!
         let hindiRequest = TranscriptionService.geminiTranscriptionRequest(
             baseURL: geminiURL,
-apiKey: <redacted>
+            apiKey: "k",
             model: "gemini-2.5-flash",
             audioData: Data([0, 1, 2]),
             format: "wav",
@@ -84,7 +84,7 @@ apiKey: <redacted>
         TestSupport.expect(hindiPrompt.contains("Never convert Roman-script"), "Gemini prompt must carry the script rule")
         let autoRequest = TranscriptionService.geminiTranscriptionRequest(
             baseURL: geminiURL,
-apiKey: <redacted>
+            apiKey: "k",
             model: "gemini-2.5-flash",
             audioData: Data([0, 1, 2]),
             format: "wav"

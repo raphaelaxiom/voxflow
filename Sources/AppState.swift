@@ -1134,7 +1134,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.apiBaseURL = provider.defaultBaseURL
         self.transcriptionModel = provider.defaultTranscriptionModel
         self.postProcessingModel = provider.defaultPostProcessingModel
-        self.postProcessingFallbackModel = provider.defaultFallbackModel
+        self.postProcessingFallbackModel = provider.defaultPostProcessingFallbackModel
         self.contextModel = provider.defaultContextModel
         self.apiKey = key
         isApplyingAPIConfiguration = false
@@ -1142,7 +1142,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         persistAPIBaseURL(apiBaseURL)
         rebuildContextService()
         committedAPIConfiguration = ValidatedAPIConfiguration(
-apiKey: <redacted>
+            apiKey: apiKey,
             baseURL: apiBaseURL,
             transcriptionAPIURL: transcriptionAPIURL,
             transcriptionAPIKey: transcriptionAPIKey
