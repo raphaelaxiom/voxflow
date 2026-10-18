@@ -421,46 +421,26 @@ struct SettingsRow: View {
     }
 }
 
-/// History list with swipe actions, adapted from the library's InboxList.
-/// Leading swipe = Copy (real clipboard copy); trailing swipe = Delete
-/// (real history deletion). The items are the caller's real dictations —
-/// never placeholder data.
+/// Plain history rows with dividers. The rows themselves carry the real
+/// Copy / Play / Delete buttons — no List, no swipe actions (those only
+/// work inside a List, and a List nested in the Dashboard's single
+/// ScrollView broke history scrolling in v0.1.4).
 struct HistoryList<Item: Identifiable>: View {
     let items: [Item]
-    let onCopy: (Item) -> Void
-    let onDelete: (Item) -> Void
     var rowContent: (Item) -> AnyView
 
     init(
         items: [Item],
-        onCopy: @escaping (Item) -> Void,
-        onDelete: @escaping (Item) -> Void,
         @ViewBuilder rowContent: @escaping (Item) -> some View
     ) {
         self.items = items
-        self.onCopy = onCopy
-        self.onDelete = onDelete
         self.rowContent = { AnyView(rowContent($0)) }
     }
 
     var body: some View {
         ForEach(items) { item in
             rowContent(item)
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button(role: .destructive) {
-                        onDelete(item)
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                }
-                .swipeActions(edge: .leading) {
-                    Button {
-                        onCopy(item)
-                    } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
-                    }
-                    .tint(.green)
-                }
+            Divider()
         }
     }
 }

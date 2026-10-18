@@ -41,7 +41,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .groq:
             return "Groq — Whisper transcription + gpt-oss polish. Needs a Groq API key."
         case .ollama:
-            return "Local Ollama server — polish + transforms run locally. Transcription needs an audio-capable OpenAI-compatible endpoint; stock Ollama serves chat models only."
+            return "Local Ollama server — transcription runs on-device via macOS Speech Recognition; polish + transforms run locally on Ollama. No key needed."
         case .custom:
             return "Any OpenAI-compatible endpoint (LM Studio, vLLM, …). Enter its base URL below."
         }

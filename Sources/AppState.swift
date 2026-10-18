@@ -25,14 +25,13 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case prompts
     case macros
     case runLog
-    case debug
 
     var id: String { rawValue }
 
+    /// All tabs are user-facing. (The old Debug tab only held controls for
+    /// the deleted recording-overlay window, so it is gone entirely.)
     static var visibleCases: [SettingsTab] {
-        allCases.filter { tab in
-            tab != .debug || AppBuild.isDevBundle
-        }
+        allCases
     }
 
     var title: String {
@@ -41,7 +40,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .prompts: return "Prompts"
         case .macros: return "Voice Macros"
         case .runLog: return "Run Log"
-        case .debug: return "Debug"
         }
     }
 
@@ -51,7 +49,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .prompts: return "text.bubble"
         case .macros: return "music.mic"
         case .runLog: return "clock.arrow.circlepath"
-        case .debug: return "wrench.and.screwdriver"
         }
     }
 }
@@ -441,8 +438,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     /// Text of the dictation whose paste failed because no text field had
-    /// focus. Shown in the pill popup; cleared when the popup dismisses.
+    /// focus. Shown in the menu + Dashboard banner copy affordance;
+    /// cleared when dismissed or after the 15s auto-clear.
     @Published var pasteFailureText: String?
+    /// Bumped on every show/dismiss so a stale 15s auto-clear timer can
+    /// never clear a newer paste failure.
+    private var pasteFailureGeneration = 0
 
     private var currentRecordingStartedAt: Date?
 
@@ -631,11 +632,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var statusText: String = "Ready"
     @Published var hasAccessibility = false
     @Published var hotkeyMonitoringErrorMessage: String?
-    @Published var isDebugOverlayActive = false
     @Published var selectedSettingsTab: SettingsTab? = .general
     @Published var pipelineHistory: [PipelineHistoryItem] = []
     @Published var debugStatusMessage = "Idle"
-    @Published var debugShowsUpdateReminderAfterDictation = false
     @Published var lastRawTranscript = ""
     @Published var lastPostProcessedTranscript = ""
     @Published var lastPostProcessingPrompt = ""
@@ -662,11 +661,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     let audioRecorder = AudioRecorder()
     let hotkeyManager = HotkeyManager()
-    let overlayManager = RecordingOverlayManager()
     private var accessibilityTimer: Timer?
-    private var audioLevelCancellable: AnyCancellable?
-    private var debugOverlayTimer: Timer?
-    private var recordingInitializationTimer: DispatchSourceTimer?
     private var transcriptionTask: Task<Void, Never>?
     private var transcribingAudioFileName: String?
     private var contextService: AppContextService
@@ -686,7 +681,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var realtimeService: RealtimeTranscriptionService?
     private var automaticTerminationDisabled = false
     private var activeAudioInterruption: ActiveAudioInterruption?
-    private var pendingOverlayDismissToken: UUID?
     private var shouldMonitorHotkeys = false
     private var isCapturingShortcut = false
     private var isAwaitingMicrophonePermission = false
@@ -694,7 +688,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var pendingMicrophonePermissionSelectionSnapshot: AppSelectionSnapshot?
     private var pendingMicrophonePermissionManualCommandRequested: Bool?
     private var isApplyingAPIConfiguration = false
-    private let postTranscriptionUpdateReminderDuration: TimeInterval = 7
 
     init() {
         UserDefaults.standard.removeObject(forKey: "force_http2_transcription")
@@ -892,27 +885,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
         if savedCopyAgainCustomShortcut.didUpdateStoredValue {
             persistOptionalShortcut(savedCopyAgainCustomShortcut.binding, key: savedCopyAgainCustomShortcutStorageKey)
-        }
-
-        overlayManager.onStopButtonPressed = { [weak self] in
-            DispatchQueue.main.async {
-                self?.handleOverlayStopButtonPressed()
-            }
-        }
-        overlayManager.onUpdateOverlayPressed = { [weak self] in
-            DispatchQueue.main.async {
-                self?.handleUpdateOverlayPressed()
-            }
-        }
-        overlayManager.onCopyPasteFailure = { [weak self] in
-            DispatchQueue.main.async {
-                self?.copyPasteFailureText()
-            }
-        }
-        overlayManager.onPasteFailureDismissed = { [weak self] in
-            DispatchQueue.main.async {
-                self?.pasteFailureText = nil
-            }
         }
 
         // Clear any stale recording flag left over from an unclean exit.
@@ -1204,12 +1176,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func makeTranscriptionService() throws -> TranscriptionService {
+        // Ollama has no audio-transcription endpoint (its OpenAI-compatible
+        // API serves only /chat/completions + /models): transcribe on-device
+        // via macOS Speech Recognition and let Ollama handle polish only.
         try TranscriptionService(
             apiKey: resolvedTranscriptionAPIKey,
             baseURL: resolvedTranscriptionBaseURL,
             transcriptionModel: transcriptionModel,
             language: resolvedTranscriptionLanguage,
-            languageName: Self.dictationLanguageName(for: transcriptionLanguage)
+            languageName: Self.dictationLanguageName(for: transcriptionLanguage),
+            localTranscription: aiProvider == .ollama
         )
     }
 
@@ -1391,11 +1367,23 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return result.transcript
     }
 
-    // MARK: - Paste-failure popup
+    // MARK: - Paste-failure copy affordance
+    //
+    // When dictation finishes with no editable text field focused, the
+    // transcript is still saved to history and this text is set, which
+    // surfaces a real "Text not pasted. Click here to copy text." button
+    // in the status-item menu AND in the Dashboard banner. The old pill
+    // popup is gone (v0.1.4 deleted the overlay window); these two
+    // surfaces are its replacement. Auto-clears after 15s like before.
 
     func showPasteFailure(text: String) {
         pasteFailureText = text
-        overlayManager.showPasteFailure(text: text)
+        pasteFailureGeneration += 1
+        let generation = pasteFailureGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self, self.pasteFailureGeneration == generation else { return }
+            self.pasteFailureText = nil
+        }
     }
 
     func copyPasteFailureText() {
@@ -1407,12 +1395,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func dismissPasteFailure() {
         pasteFailureText = nil
-        overlayManager.dismissPasteFailure()
+        pasteFailureGeneration += 1
     }
 
     /// Whether the frontmost app currently has an editable text field
     /// focused. Fails open (returns true) when Accessibility is
-    /// unavailable, so dictation keeps pasting as before.
+    /// unavailable or any check errors, so dictation keeps pasting as
+    /// before. Only returns false on positive evidence the focused
+    /// element cannot accept pasted text (wrong role, or disabled).
     func isEditableTextFieldFocused() -> Bool {
         guard AXIsProcessTrusted() else { return true }
         guard let app = NSWorkspace.shared.frontmostApplication else { return true }
@@ -1430,7 +1420,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
         guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
               let role = roleValue as? String else { return true }
         let editableRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
-        return editableRoles.contains(role)
+        guard editableRoles.contains(role) else { return false }
+        // A disabled text field cannot accept a paste even though its
+        // role looks editable. An unreadable flag fails open.
+        var enabledValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXEnabledAttribute as CFString, &enabledValue) == .success,
+           let enabled = enabledValue as? Bool, !enabled {
+            return false
+        }
+        return true
     }
 
     func deleteHistoryEntry(id: UUID) {
@@ -2025,7 +2023,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         case .switchedToToggle:
             if isRecording {
                 activeRecordingTriggerMode = .toggle
-                overlayManager.setRecordingTriggerMode(.toggle, animated: true)
             } else if pendingShortcutStartMode != nil {
                 pendingShortcutStartMode = .toggle
             }
@@ -2069,11 +2066,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func handleOverlayStopButtonPressed() {
-        guard isRecording, activeRecordingTriggerMode == .toggle else { return }
-        stopAndTranscribe()
-    }
-
     private func cancelToggleShortcutSession() {
         guard pendingShortcutStartMode == .toggle || activeRecordingTriggerMode == .toggle else { return }
 
@@ -2082,9 +2074,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         activeRecordingTriggerMode = nil
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
-        audioLevelCancellable?.cancel()
-        audioLevelCancellable = nil
-        cancelRecordingInitializationTimer()
         contextCaptureTask?.cancel()
         contextCaptureTask = nil
         capturedContext = nil
@@ -2093,7 +2082,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         errorMessage = nil
         debugStatusMessage = "Cancelled"
         statusText = "Cancelled"
-        overlayManager.dismiss()
         tearDownRealtimeService()
         audioRecorder.cancelRecording()
         restoreAudioInterruptionIfNeeded()
@@ -2120,7 +2108,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         errorMessage = nil
         debugStatusMessage = "Cancelled"
         statusText = "Cancelled"
-        overlayManager.dismiss()
         audioRecorder.cleanup()
         if let transcribingAudioFileName {
             Self.deleteAudioFile(transcribingAudioFileName)
@@ -2337,7 +2324,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         currentSessionIntent = resolvedIntent
-        overlayManager.setRecordingTriggerMode(triggerMode, animated: false)
         return true
     }
 
@@ -2440,12 +2426,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         hotkeyManager.stop()
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
-        cancelRecordingInitializationTimer()
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
-        audioLevelCancellable?.cancel()
-        audioLevelCancellable = nil
-        overlayManager.dismiss()
     }
 
     private func applyAudioInterruptionIfNeeded() {
@@ -2486,69 +2468,30 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func beginRecording(triggerMode: RecordingTriggerMode) {
         os_log(.info, log: recordingLog, "beginRecording() entered")
         beginCriticalDictationActivity()
-        clearPendingOverlayDismissToken()
         errorMessage = nil
 
         isRecording = true
         currentRecordingStartedAt = Date()
         statusText = "Starting..."
         hasShownScreenshotPermissionAlert = false
-        // Keep this recording's display preference fixed, including during startup silence.
-        let showsRecordingTimer =
-            RecordingTimerPreference.load(from: .standard)
 
         let timingGeneration = audioRecorder.prepareRecordingTiming()
 
-        // Show initializing dots only if engine takes longer than 0.2s to start
-        var overlayShown = false
-        cancelRecordingInitializationTimer()
-        let initTimer = DispatchSource.makeTimerSource(queue: .main)
-        recordingInitializationTimer = initTimer
-        initTimer.schedule(deadline: .now() + 0.2)
-        initTimer.setEventHandler { [weak self] in
-            guard let self, !overlayShown else { return }
-            overlayShown = true
-            os_log(.info, log: recordingLog, "engine slow — showing initializing overlay")
-            self.clearPendingOverlayDismissToken()
-            self.overlayManager.showInitializing(
-                mode: self.activeRecordingTriggerMode ?? triggerMode,
-                isCommandMode: self.currentSessionIntent.isCommandMode
-            )
-        }
-        initTimer.resume()
-
-        // Transition to waveform when first real audio arrives (any non-zero RMS)
+        // Recording state is shown via the status-item icon + menu and the
+        // Dashboard banner (v0.1.4 deleted the custom overlay window).
         let deviceUID = selectedMicrophoneID
         audioRecorder.onRecordingReady = { [weak self] captureStartedAt in
             // The recorder already delivers on main after validating the generation.
             // Do not enqueue again: cancellation could invalidate it between main-queue blocks.
             guard let self, self.isRecording, self.activeRecordingTriggerMode != nil else { return }
-            self.cancelRecordingInitializationTimer()
-            os_log(.info, log: recordingLog, "first real audio — transitioning to waveform")
+            os_log(.info, log: recordingLog, "first real audio — recording")
             self.statusText = "Recording..."
-            self.clearPendingOverlayDismissToken()
-            if overlayShown {
-                self.overlayManager.transitionToRecording(
-                    mode: self.activeRecordingTriggerMode ?? triggerMode,
-                    isCommandMode: self.currentSessionIntent.isCommandMode,
-                    startedAt: captureStartedAt,
-                    showsRecordingTimer: showsRecordingTimer
-                )
-            } else {
-                self.overlayManager.showRecording(
-                    mode: self.activeRecordingTriggerMode ?? triggerMode,
-                    isCommandMode: self.currentSessionIntent.isCommandMode,
-                    startedAt: captureStartedAt,
-                    showsRecordingTimer: showsRecordingTimer
-                )
-            }
-            overlayShown = true
             self.playAlertSound(named: "Tink")
+            _ = captureStartedAt
         }
         audioRecorder.onRecordingFailure = { [weak self] error in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.cancelRecordingInitializationTimer()
                 self.handleRecordingFailure(error)
             }
         }
@@ -2565,15 +2508,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 DispatchQueue.main.async { [self] in
                     guard self.isRecording, self.activeRecordingTriggerMode != nil else { return }
                     self.startContextCapture()
-                    self.audioLevelCancellable = self.audioRecorder.$audioLevel
-                        .receive(on: DispatchQueue.main)
-                        .sink { [weak self] level in
-                            self?.overlayManager.updateAudioLevel(level)
-                        }
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self.cancelRecordingInitializationTimer()
                     guard self.isRecording || self.activeRecordingTriggerMode != nil else { return }
                     self.handleRecordingFailure(error)
                 }
@@ -2582,11 +2519,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func handleRecordingFailure(_ error: Error) {
-        cancelRecordingInitializationTimer()
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
-        audioLevelCancellable?.cancel()
-        audioLevelCancellable = nil
         contextCaptureTask?.cancel()
         contextCaptureTask = nil
         capturedContext = nil
@@ -2607,7 +2541,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         endCriticalDictationActivity()
         errorMessage = formattedRecordingStartError(error)
         statusText = "Error"
-        overlayManager.dismiss()
         refreshAvailableMicrophonesIfNeeded()
     }
 
@@ -2889,15 +2822,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func stopAndTranscribe() {
         cancelPendingShortcutStart()
-        cancelRecordingInitializationTimer()
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
         let sessionIntent = currentSessionIntent
         currentSessionIntent = .dictation
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
-        audioLevelCancellable?.cancel()
-        audioLevelCancellable = nil
         debugStatusMessage = "Preparing audio"
         let sessionContext = capturedContext
         let inFlightContextTask = contextCaptureTask
@@ -2916,7 +2846,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         statusText = "Preparing audio..."
         errorMessage = nil
         playAlertSound(named: "Pop")
-        overlayManager.showTranscribing()
         audioRecorder.stopRecording { [weak self] fileURL in
             guard let self else { return }
             guard let fileURL else {
@@ -2925,7 +2854,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self.endCriticalDictationActivity()
                 self.errorMessage = "No audio recorded"
                 self.statusText = "Error"
-                self.overlayManager.dismiss()
                 self.refreshAvailableMicrophonesIfNeeded()
                 return
             }
@@ -3060,34 +2988,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         let enterOnlyStatusText = "Pressed Enter"
                         let shouldPressEnterAfterPaste = parsedTranscript.shouldPressEnterAfterPaste
 
-                        let shouldPersistRawDictationFallback: Bool
-                        switch result.outcome {
-                        case .postProcessingFailedFallback,
-                             .preservedExactWordingTranslationFailedFallback:
-                            shouldPersistRawDictationFallback = !trimmedFinalTranscript.isEmpty
-                        default:
-                            shouldPersistRawDictationFallback = false
-                        }
-
                         if trimmedFinalTranscript.isEmpty {
                             self.statusText = shouldPressEnterAfterPaste ? enterOnlyStatusText : "Nothing to transcribe"
-                            self.clearPendingOverlayDismissToken()
-                            if !self.showPostTranscriptionUpdateReminderIfNeeded() {
-                                self.overlayManager.dismiss()
-                            }
                             if shouldPressEnterAfterPaste {
                                 self.pressEnterWhenShortcutReleased()
                             }
                         } else {
                             self.statusText = completionStatusText
-                            if shouldPersistRawDictationFallback {
-                                self.scheduleOverlayDismissAfterFailureIndicator(after: 2.5)
-                            } else {
-                                self.clearPendingOverlayDismissToken()
-                                if !self.showPostTranscriptionUpdateReminderIfNeeded() {
-                                    self.overlayManager.dismiss()
-                                }
-                            }
 
                             let pendingClipboardRestore = self.writeTranscriptToPasteboard(trimmedFinalTranscript)
                             if self.isEditableTextFieldFocused() {
@@ -3102,8 +3009,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
                                 }
                             } else {
                                 // No text field had focus: the dictation is
-                                // already saved to history above, and the pill
-                                // popup lets the user copy it on demand.
+                                // already saved to history above, and the
+                                // copy button (menu + Dashboard banner)
+                                // lets the user copy it on demand.
                                 self.showPasteFailure(text: trimmedFinalTranscript)
                                 self.restoreClipboardIfNeeded(pendingClipboardRestore)
                             }
@@ -3137,7 +3045,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.isTranscribing = false
                         self.endCriticalDictationActivity()
                         self.statusText = "Error"
-                        self.overlayManager.showError(userFacingErrorMessage)
                         self.lastPostProcessedTranscript = ""
                         self.lastRawTranscript = ""
                         self.lastContextSummary = ""
@@ -3219,6 +3126,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func startRealtimeStreamingIfEnabled() {
         guard realtimeStreamingEnabled else { return }
+        // Ollama has no realtime transcription API — the file-based
+        // on-device path handles it. Streaming would only attempt a
+        // nonexistent endpoint.
+        guard aiProvider != .ollama else {
+            os_log(.info, log: recordingLog, "realtime streaming skipped for Ollama (no realtime API) — on-device file transcription handles it")
+            return
+        }
         let trimmedBase = resolvedTranscriptionBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedBase.isEmpty else {
             os_log(.info, log: recordingLog, "realtime streaming requested but base URL is empty — skipping")
@@ -3361,8 +3275,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             // Permission errors are fatal — stop recording
             tearDownRealtimeService()
             audioRecorder.cancelRecording()
-            audioLevelCancellable?.cancel()
-            audioLevelCancellable = nil
             contextCaptureTask?.cancel()
             contextCaptureTask = nil
             capturedContext = nil
@@ -3372,7 +3284,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             activeRecordingTriggerMode = nil
             endCriticalDictationActivity()
             statusText = "Screenshot Required"
-            overlayManager.dismiss()
 
             playAlertSound(named: "Basso")
             showScreenshotPermissionAlert(message: message)
@@ -3409,114 +3320,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         alert.addButton(withTitle: "Dismiss")
         alert.icon = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: nil)
         _ = alert.runModal()
-    }
-
-    func toggleDebugOverlay() {
-        if isDebugOverlayActive {
-            stopDebugOverlay()
-        } else {
-            startDebugOverlay()
-        }
-    }
-
-    private func startDebugOverlay() {
-        isDebugOverlayActive = true
-        clearPendingOverlayDismissToken()
-        overlayManager.showRecording(
-            showsRecordingTimer:
-                RecordingTimerPreference.load(from: .standard)
-        )
-
-        // Simulate audio levels with a timer
-        var phase: Double = 0.0
-        debugOverlayTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            phase += 0.15
-            // Generate a fake audio level that oscillates like speech
-            let base = 0.3 + 0.2 * sin(phase)
-            let noise = Float.random(in: -0.15...0.15)
-            let level = min(max(Float(base) + noise, 0.0), 1.0)
-            self.overlayManager.updateAudioLevel(level)
-        }
-    }
-
-    private func stopDebugOverlay() {
-        debugOverlayTimer?.invalidate()
-        debugOverlayTimer = nil
-        isDebugOverlayActive = false
-        clearPendingOverlayDismissToken()
-        overlayManager.dismiss()
-    }
-
-    private func clearPendingOverlayDismissToken() {
-        pendingOverlayDismissToken = nil
-    }
-
-    @MainActor
-    private func showPostTranscriptionUpdateReminderIfNeeded() -> Bool {
-        if debugShowsUpdateReminderAfterDictation {
-            showDebugUpdateAvailableOverlay()
-            return true
-        }
-
-        let updateManager = UpdateManager.shared
-        guard updateManager.shouldShowPostTranscriptionReminder() else { return false }
-
-        let dismissToken = UUID()
-        pendingOverlayDismissToken = dismissToken
-        updateManager.markPostTranscriptionReminderShown()
-        overlayManager.showUpdateAvailable(version: updateManager.latestReleaseVersion)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + postTranscriptionUpdateReminderDuration) { [weak self] in
-            guard let self, self.pendingOverlayDismissToken == dismissToken else { return }
-            self.pendingOverlayDismissToken = nil
-            self.overlayManager.dismiss()
-        }
-
-        return true
-    }
-
-    @MainActor
-    func showDebugUpdateAvailableOverlay() {
-        let updateManager = UpdateManager.shared
-        let version = updateManager.latestReleaseVersion.isEmpty ? "9.9.9" : updateManager.latestReleaseVersion
-        let dismissToken = UUID()
-        if isDebugOverlayActive || debugOverlayTimer != nil {
-            stopDebugOverlay()
-        }
-        pendingOverlayDismissToken = dismissToken
-        overlayManager.showUpdateAvailable(version: version)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + postTranscriptionUpdateReminderDuration) { [weak self] in
-            guard let self, self.pendingOverlayDismissToken == dismissToken else { return }
-            self.pendingOverlayDismissToken = nil
-            self.overlayManager.dismiss()
-        }
-    }
-
-    @MainActor
-    private func handleUpdateOverlayPressed() {
-        clearPendingOverlayDismissToken()
-        overlayManager.dismiss()
-        selectedSettingsTab = .general
-        NotificationCenter.default.post(name: .showSettings, object: nil)
-
-        DispatchQueue.main.async {
-            if UpdateManager.shared.updateAvailable {
-                UpdateManager.shared.showUpdateAlert()
-            }
-        }
-    }
-
-    private func scheduleOverlayDismissAfterFailureIndicator(after delay: TimeInterval) {
-        let dismissToken = UUID()
-        pendingOverlayDismissToken = dismissToken
-        overlayManager.showFailureIndicator()
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, self.pendingOverlayDismissToken == dismissToken else { return }
-            self.pendingOverlayDismissToken = nil
-            self.overlayManager.dismiss()
-        }
     }
 
     func toggleDebugPanel() {
@@ -3689,11 +3492,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             self?.pressEnter()
             completion?()
         }
-    }
-
-    private func cancelRecordingInitializationTimer() {
-        recordingInitializationTimer?.cancel()
-        recordingInitializationTimer = nil
     }
 
     private func scheduleReadyStatusReset(after delay: TimeInterval, matching statuses: Set<String>? = nil) {

@@ -8,7 +8,6 @@ struct VoxflowTests {
         TemperatureCapabilityCacheTests.run()
         ModelConfigurationTests.run()
         RecordingCaptureTimingTests.run()
-        RecordingTimerPreferenceTests.run()
         ShortcutCoreTests.run()
         SemanticVersionTests.run()
         LLMCooldownManagerTests.run()
@@ -19,7 +18,6 @@ struct VoxflowTests {
         await APIConfigurationDraftTests.run()
         DashboardStatsTests.run()
         AIProviderTests.run()
-        OverlayPhaseTests.run()
         print("VoxflowTests passed")
     }
 }

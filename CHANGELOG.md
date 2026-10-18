@@ -10,6 +10,28 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [0.1.4] - 2026-10-18
+
+### Removed
+
+- **All Voxflow-owned notch / pill / overlay-window code — deleted, not fixed.** The custom overlay panel, winged menu-bar layout, pill window, notch-geometry calculations, and the whole RecordingOverlay window machinery are gone (both the wide white bar and the small pill were rejected). The app's only top-of-screen presence is now the real system menu bar + a standard `NSStatusItem`: the system draws the menu bar and the real notch (camera cutout) with the real UI and animations. No Voxflow-owned window exists at the top of the screen in any state — menu open or closed, app active or in background, fullscreen or windowed. Recording / transcribing / paste-failed state shows via the status-item icon (record / ellipsis / orange alert) and the menu.
+- Settings → Recording Overlay section (Minimalist menu-bar overlay / Drop-down pill + recording-timer toggle + display picker) — it configured the deleted overlay, so it is removed rather than left as dead settings. The Debug tab (Debug Overlay / update-overlay controls) is removed for the same reason.
+
+### Fixed
+
+- **Logo recreated completely (all surfaces).** App icon, menu-bar tray icon, and in-app wordmark redrawn as sharp vector renders: pixel-aligned bars, thicker Bézier ribbon, one continuous vertical gradient across the whole mark, feathered highlight. The hero "VOXFLOW" wordmark was stroke-only at 60–90% opacity with a slow drift (faint/ghosted); it is now solid filled letters with a thin orange hairline at full opacity. No stale/low-res asset is referenced anywhere.
+- **Dashboard hero buttons.** The Dashboard never displayed `appState.errorMessage` / recording state, so a failed "Start Dictating" click (permission missing, mic denied, provider error) looked identical to a dead button — the failure only showed in the menu-bar menu. The Dashboard now has a visible status banner (error + working permission action, paste-failure copy action, recording/transcribing indicators), and both hero buttons log at action entry (`os_log`, provable in Console).
+- **Ollama works end-to-end.** Root cause: Ollama's OpenAI-compatible API serves `/v1/chat/completions` and `/v1/models` but has NO audio-transcription endpoint, so the app's `{base}/audio/transcriptions` request always 404'd. For the Ollama provider, audio is now transcribed on-device via macOS Speech Recognition (`SFSpeechRecognizer`, on-device when supported) and only the polish/transform step goes to Ollama's `/chat/completions`. Local-host validation no longer demands an API key: an empty key validates by server reachability. Realtime streaming is skipped for Ollama (no realtime API; the file path handles it). The Ollama subtitle and the Transcription Model field now state plainly that the model field is unused for Ollama.
+- **Test connection (Settings → AI Provider).** New "Test connection" button reports the REAL result: Ollama not running on `localhost:11434` ("start it with `ollama serve`"), polish model not pulled ("run `ollama pull <model>`"), invalid API key, endpoint 404, unreachable host. Never a bare "404 Not Found" again.
+- **Dashboard scroll + pinned tab bar.** The old `ZStack(alignment: .bottom)` let a taller-than-window content stack grow past the window, pushing the CustomTabBar below the visible edge with no way to scroll to it — and no ScrollView wrapped the content. The Dashboard is now one plain `VStack`: top bar, status banner, a single `ScrollView` for the content, tab bar pinned at the bottom. The window also gets `minSize 1080×680` (SwiftUI `.frame(minWidth:minHeight:)` does not constrain the NSWindow). History scrolls normally: the nested `List` (which fought the outer scroll) is replaced by plain rows with dividers, and all nested ScrollViews (Insights, Help, Dictionary, Snippets, Settings sub-views, Run Log) are removed — the Run Log renders its latest 100 rows inline.
+- **Permissions are actionable, not dead warnings.** The menu's "Global shortcuts unavailable" row was a dead `Text`; it is now the message plus a working "Grant permission in System Settings" button (opens the Accessibility pane). The Dashboard error banner also offers the right pane for Accessibility / Microphone / Screen Recording errors (the permission prompts themselves already opened the right panes).
+- **Paste failure auto-detect + copy button.** After dictation, if the cursor/focus is NOT in an editable text field, the app already detected it via the Accessibility focused-element check — but the only affordance was the deleted pill popup. Now the copy button appears automatically in the status-item menu ("Text not pasted. Click here to copy text." — really copies) and in the Dashboard banner, and the status-item icon turns into an orange alert. The dictation is still saved to history, and history entries keep their working copy action. The 15s auto-clear still applies.
+
+### Changed
+
+- History rows: swipe actions removed (they only work inside a `List`); rows carry the real Copy / Play / Delete buttons.
+- Run Log (Settings): renders the latest 100 runs inline with a "Showing the latest 100 of N runs" note instead of a nested scroll.
+
 ## [0.1.3] - 2026-10-17
 
 ### Fixed

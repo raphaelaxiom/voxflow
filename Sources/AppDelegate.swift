@@ -31,8 +31,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        // The permanent idle pill goes up at launch and stays until quit.
-        appState.overlayManager.showIdle()
+        // No custom window at the top of the screen: the system menu bar
+        // + status item is the app's only top-of-screen presence (v0.1.4
+        // deleted the custom pill/overlay window entirely).
 
         if !appState.hasCompletedSetup {
             // First run: Setup is a section inside the Dashboard window.
@@ -66,9 +67,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Open Settings: route to the Dashboard's inline Settings section.
-    /// AppState sets `selectedSettingsTab` before posting (e.g. .general
-    /// from the update pill, .runLog from the debug toggle); the embedded
-    /// SettingsView honors it.
+    /// AppState sets `selectedSettingsTab` before posting (e.g. .runLog
+    /// from the debug-panel toggle); the embedded SettingsView honors it.
     @objc private func handleShowSettings() {
         appState.dashboardSection = .settings
         appState.showingSetupInline = false
@@ -110,6 +110,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "\(AppName.displayName) Dashboard"
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
+        // The Dashboard must never shrink below the layout's minimum:
+        // SwiftUI .frame(minWidth:minHeight:) does NOT constrain the
+        // NSWindow, and a smaller window clipped content and pushed the
+        // bottom tab bar off-screen (v0.1.4 Issue 5).
+        window.minSize = NSSize(width: 1080, height: 680)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

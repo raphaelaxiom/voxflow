@@ -253,6 +253,12 @@ struct ProviderSettingsFields: View {
                 }
             )
 
+            if appState.aiProvider == .ollama {
+                Text("Not used — Ollama transcription runs on-device via macOS Speech Recognition. This field only applies to cloud providers.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             VStack(alignment: .leading, spacing: 6) {
                 Text("Transcription Language")
                     .font(.caption.weight(.semibold))
@@ -441,8 +447,6 @@ struct SettingsView: View {
                     VoiceMacrosSettingsView()
                 case .runLog:
                     RunLogView()
-                case .debug:
-                    DebugSettingsView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -472,69 +476,21 @@ private struct SettingsSidebarRow: View {
     }
 }
 
-// MARK: - Debug Settings
-
-struct DebugSettingsView: View {
-    @EnvironmentObject var appState: AppState
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Debug")
-                    .font(.largeTitle.bold())
-
-                SettingsCard("Overlay", icon: "wrench.and.screwdriver") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Show the recording overlay with simulated audio levels.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        Button(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") {
-                            appState.toggleDebugOverlay()
-                        }
-                    }
-                }
-
-                SettingsCard("Update Overlay", icon: "arrow.down.circle") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Display the update available overlay after dictation finishes.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        ToggleRow(
-                            icon: "arrow.down.circle",
-                            title: "Show after dictation",
-                            subtitle: "Show the update reminder after a dictation finishes.",
-                            isOn: $appState.debugShowsUpdateReminderAfterDictation
-                        )
-
-                        Button("Show Update Overlay Now") {
-                            appState.showDebugUpdateAvailableOverlay()
-                        }
-                    }
-                }
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
-
 // MARK: - General Settings
 
 struct GeneralSettingsView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openURL) private var openURL
     @AppStorage("show_menu_bar_icon") private var showMenuBarIcon = true
-    @AppStorage("overlay_display_id") private var overlayDisplayID = 0
-    @AppStorage("use_compact_overlay") private var useCompactOverlay = true
-    @AppStorage(RecordingTimerPreference.storageKey) private var showRecordingTimer = RecordingTimerPreference.defaultEnabled
-    @State private var screensVersion = 0
     @State private var apiDraft = APIConfigurationDraft()
     @State private var advancedProviderSettingsExpanded = false
     @State private var isValidatingKey = false
     @State private var keyValidationError: String?
     @State private var successfulAPIConfiguration: ValidatedAPIConfiguration?
+    // Test-connection result (Issue 4).
+    @State private var connectionTestResult: String?
+    @State private var connectionTestOK = false
+    @State private var isTestingConnection = false
     @State private var customVocabularyInput: String = ""
     @FocusState private var customVocabularyFocused: Bool
     @State private var micPermissionGranted = false
@@ -581,187 +537,182 @@ struct GeneralSettingsView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                // App branding header
-                VStack(spacing: 12) {
-                    Image(nsImage: NSApp.applicationIconImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 64, height: 64)
+        VStack(spacing: 20) {
+            // App branding header
+            VStack(spacing: 12) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 64, height: 64)
 
-                    Text(AppName.displayName)
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                Text(AppName.displayName)
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
 
-                    Text("v\(appVersion)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                Text("v\(appVersion)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-                    Text("Created by Raphael Axiom")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                Text("Created by Raphael Axiom")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-                    Text("Developed by DKH Verse")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                Text("Developed by DKH Verse")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-                    // GitHub card
-                    VStack(spacing: 10) {
-                        HStack(spacing: 8) {
-                            AsyncImage(url: URL(string: "https://github.com/raphaelaxiom.png")) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image.resizable().aspectRatio(contentMode: .fill)
-                                default:
-                                    Color.gray.opacity(0.2)
-                                }
+                // GitHub card
+                VStack(spacing: 10) {
+                    HStack(spacing: 8) {
+                        AsyncImage(url: URL(string: "https://github.com/raphaelaxiom.png")) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image.resizable().aspectRatio(contentMode: .fill)
+                            default:
+                                Color.gray.opacity(0.2)
                             }
-                            .frame(width: 22, height: 22)
-                            .clipShape(Circle())
-
-                            Button {
-                                openURL(voxflowRepoURL)
-                            } label: {
-                                Text("raphaelaxiom/voxflow")
-                                    .font(.system(.caption, design: .monospaced).weight(.medium))
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.blue)
-
-                            Spacer()
-
-                            HStack(spacing: 4) {
-                                Image(systemName: "star.fill")
-                                    .foregroundStyle(.yellow)
-                                    .font(.caption2)
-                                if githubCache.isLoading {
-                                    ProgressView().scaleEffect(0.5)
-                                } else if let count = githubCache.starCount {
-                                    Text("\(count.formatted()) \(count == 1 ? "star" : "stars")")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(Color.yellow.opacity(0.14)))
-
-                            Button {
-                                openURL(voxflowRepoURL)
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "star")
-                                    Text("Star")
-                                }
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(Capsule().fill(Color.yellow.opacity(0.18)))
-                            }
-                            .buttonStyle(.plain)
                         }
+                        .frame(width: 22, height: 22)
+                        .clipShape(Circle())
 
-                        if !githubCache.recentStargazers.isEmpty {
-                            Divider()
-                            HStack(spacing: 8) {
-                                HStack(spacing: -6) {
-                                    ForEach(githubCache.recentStargazers) { star in
-                                        Button {
-                                            openURL(star.user.htmlUrl)
-                                        } label: {
-                                            AsyncImage(url: star.user.avatarThumbnailUrl) { phase in
-                                                switch phase {
-                                                case .success(let image):
-                                                    image.resizable().aspectRatio(contentMode: .fill)
-                                                default:
-                                                    Color.gray.opacity(0.2)
-                                                }
+                        Button {
+                            openURL(voxflowRepoURL)
+                        } label: {
+                            Text("raphaelaxiom/voxflow")
+                                .font(.system(.caption, design: .monospaced).weight(.medium))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.blue)
+
+                        Spacer()
+
+                        HStack(spacing: 4) {
+                            Image(systemName: "star.fill")
+                                .foregroundStyle(.yellow)
+                                .font(.caption2)
+                            if githubCache.isLoading {
+                                ProgressView().scaleEffect(0.5)
+                            } else if let count = githubCache.starCount {
+                                Text("\(count.formatted()) \(count == 1 ? "star" : "stars")")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(Color.yellow.opacity(0.14)))
+
+                        Button {
+                            openURL(voxflowRepoURL)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "star")
+                                Text("Star")
+                            }
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(Color.yellow.opacity(0.18)))
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    if !githubCache.recentStargazers.isEmpty {
+                        Divider()
+                        HStack(spacing: 8) {
+                            HStack(spacing: -6) {
+                                ForEach(githubCache.recentStargazers) { star in
+                                    Button {
+                                        openURL(star.user.htmlUrl)
+                                    } label: {
+                                        AsyncImage(url: star.user.avatarThumbnailUrl) { phase in
+                                            switch phase {
+                                            case .success(let image):
+                                                image.resizable().aspectRatio(contentMode: .fill)
+                                            default:
+                                                Color.gray.opacity(0.2)
                                             }
-                                            .frame(width: 22, height: 22)
-                                            .clipShape(Circle())
-                                            .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
                                         }
-                                        .buttonStyle(.plain)
+                                        .frame(width: 22, height: 22)
+                                        .clipShape(Circle())
+                                        .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
                                     }
+                                    .buttonStyle(.plain)
                                 }
-                                .clipped()
-                                Text("recently starred")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                    .fixedSize()
-                                Spacer()
                             }
                             .clipped()
+                            Text("recently starred")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .fixedSize()
+                            Spacer()
                         }
+                        .clipped()
                     }
-                    .padding(12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(.ultraThinMaterial)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                            )
-                    )
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.top, 4)
-                .padding(.bottom, 4)
-
-                SettingsCard("App", icon: "power") {
-                    startupSection
-                }
-                SettingsCard("Updates", icon: "arrow.triangle.2.circlepath") {
-                    updatesSection
-                }
-                SettingsCard("AI Provider", icon: "cpu") {
-                    providerSection
-                }
-                SettingsCard("API Key", icon: "key.fill") {
-                    apiKeySection
-                }
-                SettingsCard("Appearance", icon: "sun.max.fill") {
-                    themeSection
-                }
-                SettingsCard("Output Language", icon: "globe") {
-                    outputLanguageSection
-                }
-                SettingsCard("Dictation Shortcuts", icon: "keyboard.fill") {
-                    hotkeySection
-                }
-                SettingsCard("Audio During Dictation", icon: "speaker.slash.fill") {
-                    dictationAudioSection
-                }
-                SettingsCard("Recording Overlay", icon: "rectangle.dashed") {
-                    overlaySection
-                }
-                SettingsCard("Edit Mode", icon: "pencil") {
-                    commandModeSection
-                }
-                SettingsCard("Cleanup", icon: "sparkles") {
-                    cleanupSection
-                }
-                SettingsCard("Clipboard", icon: "doc.on.clipboard") {
-                    clipboardSection
-                }
-                SettingsCard("Microphone", icon: "mic.fill") {
-                    microphoneSection
-                }
-                SettingsCard("Sound Volume", icon: "speaker.wave.2.fill") {
-                    soundVolumeSection
-                }
-                SettingsCard("Custom Vocabulary", icon: "text.book.closed.fill") {
-                    vocabularySection
-                }
-                SettingsCard("Permissions", icon: "lock.shield.fill") {
-                    permissionsSection
-                }
-                SettingsCard("Build", icon: "info.circle.fill") {
-                    buildInfoSection
-                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(.ultraThinMaterial)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                        )
+                )
             }
-            .padding(24)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
+            .padding(.bottom, 4)
+
+            SettingsCard("App", icon: "power") {
+                startupSection
+            }
+            SettingsCard("Updates", icon: "arrow.triangle.2.circlepath") {
+                updatesSection
+            }
+            SettingsCard("AI Provider", icon: "cpu") {
+                providerSection
+            }
+            SettingsCard("API Key", icon: "key.fill") {
+                apiKeySection
+            }
+            SettingsCard("Appearance", icon: "sun.max.fill") {
+                themeSection
+            }
+            SettingsCard("Output Language", icon: "globe") {
+                outputLanguageSection
+            }
+            SettingsCard("Dictation Shortcuts", icon: "keyboard.fill") {
+                hotkeySection
+            }
+            SettingsCard("Audio During Dictation", icon: "speaker.slash.fill") {
+                dictationAudioSection
+            }
+            SettingsCard("Edit Mode", icon: "pencil") {
+                commandModeSection
+            }
+            SettingsCard("Cleanup", icon: "sparkles") {
+                cleanupSection
+            }
+            SettingsCard("Clipboard", icon: "doc.on.clipboard") {
+                clipboardSection
+            }
+            SettingsCard("Microphone", icon: "mic.fill") {
+                microphoneSection
+            }
+            SettingsCard("Sound Volume", icon: "speaker.wave.2.fill") {
+                soundVolumeSection
+            }
+            SettingsCard("Custom Vocabulary", icon: "text.book.closed.fill") {
+                vocabularySection
+            }
+            SettingsCard("Permissions", icon: "lock.shield.fill") {
+                permissionsSection
+            }
+            SettingsCard("Build", icon: "info.circle.fill") {
+                buildInfoSection
+            }
         }
+        .padding(24)
         .onAppear {
             apiDraft.present(appState.committedAPIConfiguration)
             isValidatingKey = false
@@ -1008,6 +959,34 @@ struct GeneralSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            // Test connection (Issue 4): hits the selected provider's real
+            // endpoint and reports the REAL result — "Ollama is not
+            // running", "model not pulled", "Invalid API key" — never a
+            // bare "404 Not Found".
+            HStack(alignment: .top, spacing: 8) {
+                Button(isTestingConnection ? "Testing…" : "Test connection") {
+                    isTestingConnection = true
+                    connectionTestResult = nil
+                    Task {
+                        let (ok, message) = await ProviderConnectionTest.test(
+                            provider: appState.aiProvider,
+                            baseURL: appState.apiBaseURL,
+                            apiKey: appState.apiKey,
+                            polishModel: appState.postProcessingModel
+                        )
+                        connectionTestOK = ok
+                        connectionTestResult = message
+                        isTestingConnection = false
+                    }
+                }
+                .buttonStyle(.voxflowGlass)
+                .disabled(isTestingConnection)
+                if let result = connectionTestResult {
+                    Text(result)
+                        .font(.caption)
+                        .foregroundStyle(connectionTestOK ? .green : .red)
+                }
+            }
         }
     }
 
@@ -1017,6 +996,7 @@ struct GeneralSettingsView: View {
             set: {
                 appState.applyProvider(AIProvider.allCases[$0])
                 apiDraft.present(appState.committedAPIConfiguration)
+                connectionTestResult = nil
             }
         )
     }
@@ -1227,34 +1207,6 @@ struct GeneralSettingsView: View {
         }
     }
 
-    // MARK: Recording Overlay
-
-    private var overlaySection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            OverlayStyleOptionRow(
-                title: "Minimalist menu-bar overlay",
-                subtitle: "Two slim wings flank the camera notch and stay inside the menu bar. Never covers app tabs or toolbars.",
-                isMinimalist: true,
-                selection: $useCompactOverlay
-            )
-            OverlayStyleOptionRow(
-                title: "Drop-down pill",
-                subtitle: "Single pill hangs below the menu bar during recording. Larger and more visible, but covers a thin strip of whatever app is active.",
-                isMinimalist: false,
-                selection: $useCompactOverlay
-            )
-
-            Toggle("Show recording timer", isOn: $showRecordingTimer)
-            Text("When off, the minimalist overlay shows a waveform instead of the timer, and the drop-down pill hides the timer. Applies to the next recording.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Divider()
-
-            overlayDisplaySection
-        }
-    }
-
     // MARK: Audio During Dictation
 
     private var dictationAudioSection: some View {
@@ -1267,45 +1219,6 @@ struct GeneralSettingsView: View {
             Text("\(AppName.displayName) restores the audio state it changed when dictation ends.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-        }
-    }
-
-    /// Picks which physical display the recording overlay drops down on.
-    /// Without this, AppKit defaults to "the screen with the active key
-    /// window" (NSScreen.main), which makes the pill follow focus across
-    /// monitors — disorienting on multi-display setups.
-    private var overlayDisplaySection: some View {
-        HStack {
-            Text("Show on")
-                .font(.system(size: 13))
-            Spacer()
-            Picker("", selection: $overlayDisplayID) {
-                Text("Active window (default)").tag(0)
-                Text("Primary display").tag(-1)
-                ForEach(connectedScreenEntries, id: \.tag) { entry in
-                    Text(entry.name).tag(entry.tag)
-                }
-            }
-            .labelsHidden()
-            .accessibilityLabel("Show on")
-            .pickerStyle(.menu)
-            .frame(maxWidth: 240)
-        }
-        // Re-query NSScreen.screens whenever the display arrangement
-        // changes so newly-attached monitors appear in the menu without
-        // reopening Settings. screensVersion is just a cache-buster.
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
-            screensVersion &+= 1
-        }
-    }
-
-    private var connectedScreenEntries: [(name: String, tag: Int)] {
-        _ = screensVersion
-        return NSScreen.screens.compactMap { screen in
-            guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
-                return nil
-            }
-            return (name: screen.localizedName, tag: Int(id))
         }
     }
 
@@ -1648,20 +1561,18 @@ struct PromptsSettingsView: View {
     @State private var contextTestPrompt: String? = nil
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                SettingsCard("System Prompt", icon: "text.bubble.fill") {
-                    systemPromptSection
-                }
-                SettingsCard("Instruction Guard", icon: "shield.lefthalf.filled") {
-                    instructionGuardSection
-                }
-                SettingsCard("Context Prompt", icon: "eye.fill") {
-                    contextPromptSection
-                }
+        VStack(spacing: 20) {
+            SettingsCard("System Prompt", icon: "text.bubble.fill") {
+                systemPromptSection
             }
-            .padding(24)
+            SettingsCard("Instruction Guard", icon: "shield.lefthalf.filled") {
+                instructionGuardSection
+            }
+            SettingsCard("Context Prompt", icon: "eye.fill") {
+                contextPromptSection
+            }
         }
+        .padding(24)
         .onAppear {
             customSystemPromptInput = appState.customSystemPrompt.isEmpty
                 ? PostProcessingService.defaultSystemPrompt
@@ -2201,14 +2112,23 @@ struct RunLogView: View {
                 }
                 .frame(maxWidth: .infinity)
             } else {
-                ScrollView {
-                    VStack(spacing: 12) {
-                        ForEach(appState.pipelineHistory) { item in
-                            RunLogEntryView(item: item)
-                        }
+                // One Dashboard scroll: the run log renders as plain rows
+                // inside the outer scroll — no nested ScrollView. Capped
+                // at the latest 100 so a huge history never renders
+                // thousands of rows at once (the store keeps all 1000).
+                let visibleHistory = Array(appState.pipelineHistory.prefix(100))
+                VStack(spacing: 12) {
+                    if appState.pipelineHistory.count > visibleHistory.count {
+                        Text("Showing the latest 100 of \(appState.pipelineHistory.count) runs.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(20)
+                    ForEach(visibleHistory) { item in
+                        RunLogEntryView(item: item)
+                    }
                 }
+                .padding(20)
             }
         }
     }
@@ -2837,14 +2757,12 @@ struct VoiceMacrosSettingsView: View {
     @State private var editingMacro: VoiceMacro?
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                SettingsCard("Voice Macros", icon: "music.mic") {
-                    macrosSection
-                }
+        VStack(spacing: 20) {
+            SettingsCard("Voice Macros", icon: "music.mic") {
+                macrosSection
             }
-            .padding(24)
         }
+        .padding(24)
         .sheet(isPresented: $showingAddMacro, onDismiss: { editingMacro = nil }) {
             VoiceMacroEditorView(isPresented: $showingAddMacro, macro: $editingMacro)
         }

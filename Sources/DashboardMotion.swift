@@ -7,8 +7,7 @@ import AppKit
 // web-effect libraries Verse pointed at (OriginKit free effects +
 // the 21st.dev hero's entrance), but every implementation below is
 // native SwiftUI written for this app — no React, no JS, no copied code,
-// no WebGL shaders. The pill (RecordingOverlay) is deliberately NOT
-// touched by any of this: it keeps freeflow's exact look.
+// no WebGL shaders.
 //
 // Hard constraints honored here:
 // - Total entrance motion stays under ~600ms.
@@ -205,31 +204,33 @@ struct SkewInText: View {
     }
 }
 
-// MARK: - 5. Outlined wordmark (stroked text + slow subtle motion)
+// MARK: - 5. Filled wordmark (solid letters + thin orange hairline)
 
-/// Outlined "VOXFLOW" wordmark: stroke-only text (positive strokeWidth
-/// in NSAttributedString draws the outline without a fill) with a slow,
-/// low-amplitude opacity drift. No marching tracers, no heavy effects.
+/// "VOXFLOW" wordmark: SOLID filled letters with a thin orange outline
+/// (negative strokeWidth = fill + stroke), full opacity, no drift.
+///
+/// The previous version was stroke-ONLY (positive strokeWidth) at 60–90%
+/// opacity with a slow opacity drift — on the pastel hero it rendered as
+/// a faint ghost outline. v0.1.4 makes it crisp and properly visible:
+/// filled ink/white letters, hairline brand-orange edge, static.
 struct OutlinedWordmarkView: View {
     let text: String
     let fontSize: CGFloat
-    @State private var drift = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        OutlinedTextRepresentable(text: text, fontSize: fontSize)
-            .opacity(VoxflowMotion.reduceMotion ? 0.8 : (drift ? 0.9 : 0.6))
-            .animation(
-                VoxflowMotion.reduceMotion ? nil :
-                    .easeInOut(duration: 3.2).repeatForever(autoreverses: true),
-                value: drift
-            )
-            .onAppear { drift = true }
+        OutlinedTextRepresentable(
+            text: text,
+            fontSize: fontSize,
+            fillColor: colorScheme == .dark ? .white : NSColor(red: 0.10, green: 0.09, blue: 0.09, alpha: 1.0)
+        )
     }
 }
 
 private struct OutlinedTextRepresentable: NSViewRepresentable {
     let text: String
     let fontSize: CGFloat
+    let fillColor: NSColor
 
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField(labelWithString: "")
@@ -245,8 +246,9 @@ private struct OutlinedTextRepresentable: NSViewRepresentable {
         let font = NSFont.systemFont(ofSize: fontSize, weight: .black)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
+            .foregroundColor: fillColor,
             .strokeColor: NSColor(red: 1.0, green: 0.55, blue: 0.25, alpha: 1.0),
-            .strokeWidth: 1.6, // positive = stroke only, no fill
+            .strokeWidth: -1.2, // negative = fill + stroke (crisp, visible)
         ]
         nsView.attributedStringValue = NSAttributedString(string: text, attributes: attributes)
     }

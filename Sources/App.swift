@@ -25,6 +25,7 @@ struct MenuBarLabel: View {
     private var iconName: String {
         if appState.isRecording { return "record.circle" }
         if appState.isTranscribing { return "ellipsis.circle" }
+        if appState.pasteFailureText != nil { return "exclamationmark.circle.fill" }
         return "waveform"
     }
 
@@ -33,13 +34,18 @@ struct MenuBarLabel: View {
             if notificationManager.showCheckmark {
                 Image(systemName: "checkmark")
             }
-            if AppBuild.isDevBundle && !appState.isRecording && !appState.isTranscribing {
+            if AppBuild.isDevBundle && !appState.isRecording && !appState.isTranscribing && appState.pasteFailureText == nil {
                 Image(nsImage: StampedMenuBarIcon.templateImage)
                     .renderingMode(.template)
             } else if let trayIcon = VoxflowTrayIcon.templateImage,
-                      !appState.isRecording && !appState.isTranscribing {
+                      !appState.isRecording && !appState.isTranscribing && appState.pasteFailureText == nil {
                 Image(nsImage: trayIcon)
                     .renderingMode(.template)
+            } else if appState.pasteFailureText != nil {
+                // Orange alert: the last dictation was saved but not
+                // pasted — the menu holds the real Copy button.
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.orange)
             } else {
                 Image(systemName: iconName)
             }

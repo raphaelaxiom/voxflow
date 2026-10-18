@@ -110,6 +110,33 @@ struct MenuBarView: View {
                     .padding(.vertical, 6)
             }
 
+            // Paste failure (replaces the deleted pill popup): the last
+            // dictation was saved to history, and this button REALLY copies
+            // it so it can be pasted manually. Auto-clears after 15s.
+            if let pasteFailureText = appState.pasteFailureText, !pasteFailureText.isEmpty {
+                Divider()
+                Button {
+                    appState.copyPasteFailureText()
+                } label: {
+                    Label("Text not pasted. Click here to copy text.", systemImage: "doc.on.doc.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(Color.orange)
+                Button("Dismiss") {
+                    appState.dismissPasteFailure()
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 4)
+            }
+
             Divider()
 
             // Manual toggle
@@ -125,6 +152,17 @@ struct MenuBarView: View {
                     .font(.caption)
                     .padding(.horizontal, 16)
                     .lineLimit(3)
+                // Global-shortcut monitoring needs keyboard monitoring
+                // (Accessibility). A dead warning is not enough — offer the
+                // working grant-permission action (Issue 7).
+                Button("Grant permission in System Settings") {
+                    appState.openAccessibilitySettings()
+                }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.blue)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 4)
             }
 
             if let error = appState.errorMessage {

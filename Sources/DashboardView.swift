@@ -2,6 +2,9 @@ import SwiftUI
 import AppKit
 import AVFoundation
 import UniformTypeIdentifiers
+import os.log
+
+private let dashboardLog = OSLog(subsystem: "com.voxflow.app", category: "Dashboard")
 
 /// Dashboard sections. The floating bottom tab bar lists these; every
 /// section is backed by real data and every button does real work —
@@ -148,16 +151,26 @@ struct DashboardView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            VStack(spacing: 0) {
-                topBar
+        // ONE scroll for the whole Dashboard (Issue 5 + history scroll):
+        // a plain VStack with the tab bar pinned at the bottom. The old
+        // ZStack(alignment: .bottom) let a taller-than-window content
+        // VStack grow the ZStack past the window, pushing the tab bar
+        // below the visible area with no way to scroll to it. Sections
+        // render as plain content inside this single ScrollView — no
+        // nested ScrollViews fighting each other.
+        VStack(spacing: 0) {
+            topBar
+            statusBanner
+            Group {
                 if appState.showingSetupInline {
                     setupInlineSection
                 } else {
-                    detailContent
+                    ScrollView(.vertical, showsIndicators: true) {
+                        detailContent
+                    }
                 }
             }
-            .padding(.bottom, 78) // room for the floating tab bar
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             CustomTabBar(
                 selection: tabIndex,
@@ -165,6 +178,7 @@ struct DashboardView: View {
             )
             .frame(maxWidth: 800)
             .padding(.horizontal, 16)
+            .padding(.top, 8)
             .padding(.bottom, 12)
         }
         .background(backgroundColor)
@@ -177,6 +191,104 @@ struct DashboardView: View {
         }
         .onChange(of: selectedSection) { section in
             appState.dashboardSection = section
+        }
+    }
+
+    /// Visible status/error surface (Issue 3). The Dashboard previously
+    /// NEVER displayed `appState.errorMessage` / recording state, so a
+    /// failed "Start Dictating" click (permission missing, mic denied,
+    /// provider error) looked identical to a dead button — the failure
+    /// only showed in the menu-bar menu. Now every outcome is visible
+    /// here, with a working action for permission errors and the real
+    /// Copy button for paste failures.
+    @ViewBuilder
+    private var statusBanner: some View {
+        if let error = appState.errorMessage, !error.isEmpty {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text(error)
+                    .font(.subheadline)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if error.localizedCaseInsensitiveContains("accessibility") {
+                    Button("Open Accessibility Settings") {
+                        appState.openAccessibilitySettings()
+                    }
+                    .buttonStyle(.voxflowGlass)
+                } else if error.localizedCaseInsensitiveContains("microphone") {
+                    Button("Open Microphone Settings") {
+                        appState.openMicrophoneSettings()
+                    }
+                    .buttonStyle(.voxflowGlass)
+                } else if error.localizedCaseInsensitiveContains("screen recording")
+                            || error.localizedCaseInsensitiveContains("screenshot") {
+                    Button("Open Screen Recording Settings") {
+                        appState.openScreenCaptureSettings()
+                    }
+                    .buttonStyle(.voxflowGlass)
+                }
+                Button("Dismiss") {
+                    appState.errorMessage = nil
+                }
+                .buttonStyle(.plain)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, 24)
+            .padding(.top, 8)
+        } else if let pasteFailureText = appState.pasteFailureText, !pasteFailureText.isEmpty {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.on.doc.fill")
+                    .foregroundStyle(.orange)
+                Text("Text not pasted — your dictation was saved to history.")
+                    .font(.subheadline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button("Copy text") {
+                    appState.copyPasteFailureText()
+                }
+                .buttonStyle(.pearl)
+                Button("Dismiss") {
+                    appState.dismissPasteFailure()
+                }
+                .buttonStyle(.plain)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, 24)
+            .padding(.top, 8)
+        } else if appState.isRecording {
+            HStack(spacing: 8) {
+                Image(systemName: "record.circle")
+                    .foregroundStyle(.red)
+                Text("Recording… tap Stop in the menu bar or press your toggle shortcut to finish.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 24)
+            .padding(.top, 4)
+        } else if appState.isTranscribing {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Transcribing…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 24)
+            .padding(.top, 4)
         }
     }
 
@@ -286,16 +398,9 @@ struct DashboardView: View {
                             )
                         }
                     } else {
-                        List {
-                            HistoryList(
-                                items: todayItems,
-                                onCopy: { copyHistoryItem($0) },
-                                onDelete: { appState.deleteHistoryItem($0) }
-                            ) { item in
-                                dictationRow(item)
-                            }
+                        HistoryList(items: todayItems) { item in
+                            dictationRow(item)
                         }
-                        .listStyle(.plain)
                     }
                 }
                 Spacer(minLength: 0)
@@ -342,6 +447,10 @@ struct DashboardView: View {
                 )
                 HStack(spacing: 12) {
                     Button("Start Dictating") {
+                        // os_log at action entry: a tap is provable in
+                        // Console even if the action then fails visibly
+                        // (the failure now shows in the status banner).
+                        os_log(.info, log: dashboardLog, "Start Dictating tapped")
                         appState.startDictationFromDashboard()
                     }
                     .buttonStyle(.pearl)
@@ -350,6 +459,7 @@ struct DashboardView: View {
                     .contentShape(Rectangle())
                     .allowsHitTesting(true)
                     Button("See how it works") {
+                        os_log(.info, log: dashboardLog, "See how it works tapped")
                         selectedSection = .help
                     }
                     .buttonStyle(.voxflowGlass)
@@ -546,7 +656,7 @@ struct DashboardView: View {
                     }
                     TextEditor(text: $editingNoteBody)
                         .font(.body)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(minHeight: 420)
                         .onChange(of: editingNoteBody) { body in
                             var updated = note
                             updated.body = body
@@ -570,43 +680,41 @@ struct DashboardView: View {
     // MARK: - Insights
 
     private var insightsSection: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                StaggeredRiseText(
-                    text: "Insights",
-                    font: .system(size: 24, weight: .bold, design: .serif)
-                )
-                HStack(spacing: 16) {
-                    HoverHighlightCard { StatCard(label: "Total words", value: DashboardStats.formattedWordCount(summary.totalWords)) }
-                    HoverHighlightCard { StatCard(label: "Words per minute", value: summary.wordsPerMinute.map { "\(Int($0.rounded()))" } ?? "—") }
-                    HoverHighlightCard { StatCard(label: "Day streak", value: "\(summary.dayStreak)") }
-                    HoverHighlightCard { StatCard(label: "Total dictations", value: "\(summary.totalDictations)") }
-                }
-                ContentCard(title: "Words per day — last 14 days") {
-                    let maxWords = max(1, summary.wordsPerDay.map(\.words).max() ?? 1)
-                    HStack(alignment: .bottom, spacing: 10) {
-                        ForEach(summary.wordsPerDay, id: \.day) { entry in
-                            VStack(spacing: 4) {
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(entry.words > 0 ? Color.accentColor : Color.primary.opacity(0.12))
-                                    .frame(width: 22, height: max(4, CGFloat(entry.words) / CGFloat(maxWords) * 110))
-                                Text(entry.day, format: .dateTime.day())
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .help("\(DashboardStats.formattedWordCount(entry.words)) words, \(entry.dictations) dictations")
-                        }
-                    }
-                    .frame(height: 140, alignment: .bottom)
-                    Text("Hover a bar for the exact count.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 24) {
+            StaggeredRiseText(
+                text: "Insights",
+                font: .system(size: 24, weight: .bold, design: .serif)
+            )
+            HStack(spacing: 16) {
+                HoverHighlightCard { StatCard(label: "Total words", value: DashboardStats.formattedWordCount(summary.totalWords)) }
+                HoverHighlightCard { StatCard(label: "Words per minute", value: summary.wordsPerMinute.map { "\(Int($0.rounded()))" } ?? "—") }
+                HoverHighlightCard { StatCard(label: "Day streak", value: "\(summary.dayStreak)") }
+                HoverHighlightCard { StatCard(label: "Total dictations", value: "\(summary.totalDictations)") }
             }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            ContentCard(title: "Words per day — last 14 days") {
+                let maxWords = max(1, summary.wordsPerDay.map(\.words).max() ?? 1)
+                HStack(alignment: .bottom, spacing: 10) {
+                    ForEach(summary.wordsPerDay, id: \.day) { entry in
+                        VStack(spacing: 4) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(entry.words > 0 ? Color.accentColor : Color.primary.opacity(0.12))
+                                .frame(width: 22, height: max(4, CGFloat(entry.words) / CGFloat(maxWords) * 110))
+                            Text(entry.day, format: .dateTime.day())
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .help("\(DashboardStats.formattedWordCount(entry.words)) words, \(entry.dictations) dictations")
+                    }
+                }
+                .frame(height: 140, alignment: .bottom)
+                Text("Hover a bar for the exact count.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
         }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Dictionary
@@ -636,9 +744,8 @@ struct DashboardView: View {
                     message: "Add names and terms above and Voxflow will spell them exactly as you wrote them."
                 )
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(terms, id: \.self) { term in
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(terms, id: \.self) { term in
                             HStack {
                                 Text(term)
                                 Spacer()
@@ -654,7 +761,6 @@ struct DashboardView: View {
                             Divider()
                         }
                     }
-                }
             }
             Spacer(minLength: 0)
         }
@@ -727,9 +833,8 @@ struct DashboardView: View {
                     message: "Add a trigger phrase and its snippet text above."
                 )
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(appState.voiceMacros) { macro in
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(appState.voiceMacros) { macro in
                             HStack(alignment: .top, spacing: 12) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(macro.command)
@@ -765,7 +870,6 @@ struct DashboardView: View {
                             Divider()
                         }
                     }
-                }
             }
             Spacer(minLength: 0)
         }
@@ -976,7 +1080,7 @@ struct DashboardView: View {
                 .foregroundStyle(.secondary)
             TextEditor(text: $scratchpadStore.text)
                 .font(.body)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minHeight: 420)
             Spacer(minLength: 0)
         }
         .padding(24)
@@ -1012,39 +1116,37 @@ struct DashboardView: View {
     // MARK: - Help
 
     private var helpSection: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                StaggeredRiseText(
-                    text: "Help",
-                    font: .system(size: 24, weight: .bold, design: .serif)
-                )
-                helpParagraph(
-                    title: "Dictate anywhere",
-                    body: "Hold Fn and speak, or tap Cmd-Fn to toggle. Voxflow transcribes with \(appState.aiProvider.title), corrects the text, and pastes it where your cursor is."
-                )
-                helpParagraph(
-                    title: "Text not pasted?",
-                    body: "If your cursor was not in a text field, the dictation is still saved to history and a pill appears: \"Text not pasted. Click here to copy text.\" Click it to copy."
-                )
-                helpParagraph(
-                    title: "Your API key",
-                    body: apiKeyHelpBody
-                )
-                helpParagraph(
-                    title: "History and privacy",
-                    body: "Dictations and audio stay on your Mac. Nothing is sent anywhere except the transcription and cleanup requests to your configured provider."
-                )
-                Button("Report an issue on GitHub") {
-                    if let url = URL(string: "https://github.com/raphaelaxiom/voxflow/issues/new") {
-                        NSWorkspace.shared.open(url)
-                    }
+        VStack(alignment: .leading, spacing: 16) {
+            StaggeredRiseText(
+                text: "Help",
+                font: .system(size: 24, weight: .bold, design: .serif)
+            )
+            helpParagraph(
+                title: "Dictate anywhere",
+                body: "Hold Fn and speak, or tap Cmd-Fn to toggle. Voxflow transcribes with \(appState.aiProvider.title), corrects the text, and pastes it where your cursor is."
+            )
+            helpParagraph(
+                title: "Text not pasted?",
+                body: "If your cursor was not in a text field, the dictation is still saved to history and a copy button appears automatically — in the menu-bar menu and in the Dashboard banner: \"Text not pasted. Click here to copy text.\" Click it to copy, then paste anywhere."
+            )
+            helpParagraph(
+                title: "Your API key",
+                body: apiKeyHelpBody
+            )
+            helpParagraph(
+                title: "History and privacy",
+                body: "Dictations and audio stay on your Mac. Nothing is sent anywhere except the transcription and cleanup requests to your configured provider."
+            )
+            Button("Report an issue on GitHub") {
+                if let url = URL(string: "https://github.com/raphaelaxiom/voxflow/issues/new") {
+                    NSWorkspace.shared.open(url)
                 }
-                .buttonStyle(.voxflowGlass)
-                Spacer(minLength: 0)
             }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .buttonStyle(.voxflowGlass)
+            Spacer(minLength: 0)
         }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var apiKeyHelpBody: String {

@@ -1,5 +1,6 @@
 import Foundation
 import os.log
+import Speech
 
 private let transcriptionLog = OSLog(subsystem: "com.voxflow.app", category: "Transcription")
 
@@ -63,6 +64,12 @@ class TranscriptionService {
     /// Display name of the transcription language ("Hindi", "English", …),
     /// used in the Gemini prompt. Nil = auto-detect.
     private let languageName: String?
+    /// When true (Ollama provider), audio is transcribed ON-DEVICE via
+    /// macOS Speech Recognition instead of POSTing to
+    /// {base}/audio/transcriptions — Ollama's OpenAI-compatible API has
+    /// no audio-transcription endpoint, so that request 404s. Polish /
+    /// transforms still go to the provider's /chat/completions.
+    private let localTranscription: Bool
     private var transcriptionResponseFormat: String {
         Self.responseFormat(forModel: transcriptionModel)
     }
@@ -76,7 +83,8 @@ class TranscriptionService {
         baseURL: String = "https://generativelanguage.googleapis.com/v1beta/openai",
         transcriptionModel: String = "whisper-large-v3",
         language: String? = nil,
-        languageName: String? = nil
+        languageName: String? = nil,
+        localTranscription: Bool = false
     ) throws {
         self.apiKey = apiKey
         self.baseURL = try Self.normalizedBaseURL(from: baseURL)
@@ -86,6 +94,7 @@ class TranscriptionService {
         self.language = (trimmedLanguage?.isEmpty == false) ? trimmedLanguage : nil
         let trimmedLanguageName = languageName?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.languageName = (trimmedLanguageName?.isEmpty == false) ? trimmedLanguageName : nil
+        self.localTranscription = localTranscription
     }
 
     static func responseFormat(forModel model: String) -> String {
@@ -93,7 +102,12 @@ class TranscriptionService {
         return modelsSupportingVerboseJSON.contains(normalizedModel) ? "verbose_json" : "json"
     }
 
-    // Validate API key by hitting a lightweight endpoint
+    // Validate API key by hitting a lightweight endpoint.
+    // Local servers (Ollama / custom local endpoints) have no API key:
+    // for a loopback base URL, an empty key validates by REACHABILITY —
+    // any HTTP response from the server counts as "up". A transport error
+    // (connection refused) means the server is not running. Remote
+    // endpoints still require a real key.
     static func validateAPIKey(
         _ key: String,
         baseURL: String = "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -102,8 +116,10 @@ class TranscriptionService {
         }
     ) async -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
         guard let baseURL = try? normalizedBaseURL(from: baseURL) else { return false }
+        guard !trimmed.isEmpty else {
+            return await isLocalServerReachable(baseURL: baseURL, transport: transport)
+        }
 
         var request = URLRequest(url: baseURL.appendingPathComponent("models"))
         request.timeoutInterval = 10
@@ -113,6 +129,26 @@ class TranscriptionService {
             let (_, response) = try await transport(request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             return status == 200
+        } catch {
+            return false
+        }
+    }
+
+    /// Loopback reachability probe: GET {base}/models with NO auth header.
+    /// Any HTTP response (even 401) means the server is up.
+    private static func isLocalServerReachable(
+        baseURL: URL,
+        transport: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)
+    ) async -> Bool {
+        let host = baseURL.host?.lowercased() ?? ""
+        guard host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]" else {
+            return false
+        }
+        var request = URLRequest(url: baseURL.appendingPathComponent("models"))
+        request.timeoutInterval = 10
+        do {
+            let (_, response) = try await transport(request)
+            return response is HTTPURLResponse
         } catch {
             return false
         }
@@ -165,7 +201,110 @@ class TranscriptionService {
 
     // Send audio file for transcription and return text
     private func transcribeAudio(fileURL: URL) async throws -> String {
+        if localTranscription {
+            return try await transcribeLocally(fileURL: fileURL)
+        }
         return try await transcribeAudioWithURLSession(fileURL: fileURL)
+    }
+
+    /// On-device transcription via macOS Speech Recognition (Ollama /
+    /// local providers). Ollama's OpenAI-compatible API serves
+    /// /v1/chat/completions and /v1/models but has NO audio-transcription
+    /// endpoint, so POSTing audio to /v1/audio/transcriptions always
+    /// returns HTTP 404 — an architectural gap, not a typo. This path
+    /// closes it: the audio is transcribed locally and only the
+    /// polish/transform step goes to the provider.
+    private func transcribeLocally(fileURL: URL) async throws -> String {
+        let authorization = SFSpeechRecognizer.authorizationStatus()
+        if authorization == .notDetermined {
+            let granted = await withCheckedContinuation { continuation in
+                SFSpeechRecognizer.requestAuthorization { status in
+                    continuation.resume(returning: status)
+                }
+            }
+            guard granted == .authorized else {
+                throw TranscriptionError.transcriptionFailed(
+                    "Speech recognition is not authorized. Allow it in System Settings → Privacy & Security → Speech Recognition, then try again."
+                )
+            }
+        } else if authorization != .authorized {
+            throw TranscriptionError.transcriptionFailed(
+                "Speech recognition is not authorized. Allow it in System Settings → Privacy & Security → Speech Recognition, then try again."
+            )
+        }
+
+        let locale: Locale
+        if let language, !language.isEmpty {
+            locale = Locale(identifier: language)
+        } else {
+            locale = Locale.current
+        }
+        guard let recognizer = SFSpeechRecognizer(locale: locale) else {
+            throw TranscriptionError.transcriptionFailed(
+                "Speech recognition is not available for \(locale.identifier). Try a different Output Language in Settings."
+            )
+        }
+        guard recognizer.isAvailable else {
+            throw TranscriptionError.transcriptionFailed(
+                "Speech recognition is temporarily unavailable. Try again in a moment."
+            )
+        }
+
+        let request = SFSpeechURLRecognitionRequest(url: fileURL)
+        request.shouldReportPartialResults = false
+        request.taskHint = .dictation
+        if recognizer.supportsOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = true
+        }
+
+        // Bridge the recognition task's callback API to async/await, with
+        // cancellation wired through: when the enclosing Task is cancelled
+        // (e.g. the transcribe() timeout race), cancel the recognition
+        // task so its handler fires with an error and the continuation
+        // resumes instead of leaking a suspended task.
+        final class RecognitionTaskBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var task: SFSpeechRecognitionTask?
+            func store(_ task: SFSpeechRecognitionTask) {
+                lock.lock()
+                self.task = task
+                lock.unlock()
+            }
+            func cancel() {
+                lock.lock()
+                let task = self.task
+                lock.unlock()
+                task?.cancel()
+            }
+        }
+        let box = RecognitionTaskBox()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                var finished = false
+                let task = recognizer.recognitionTask(with: request) { result, error in
+                    guard !finished else { return }
+                    if let error {
+                        finished = true
+                        continuation.resume(throwing: TranscriptionError.transcriptionFailed(
+                            error.localizedDescription
+                        ))
+                        return
+                    }
+                    if let result, result.isFinal {
+                        finished = true
+                        continuation.resume(returning: result.bestTranscription.formattedString)
+                    }
+                }
+                box.store(task)
+                // Cancellation may have landed before the task was stored
+                // (onCancel found an empty box) — cancel it now.
+                if Task.isCancelled {
+                    task.cancel()
+                }
+            }
+        } onCancel: {
+            box.cancel()
+        }
     }
 
     /// Gemini models do not expose an OpenAI-style `/audio/transcriptions`
